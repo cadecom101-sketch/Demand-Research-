@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "demand-research"
+version = "0.1.0"
+description = "Autonomous demand research workflow using Claude Agent SDK"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Demand Research Team", email = "cad.ecom101@gmail.com"}
+]
+license = {text = "MIT"}
+
+dependencies = [
+    "anthropic>=0.25.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "click>=8.1.0",
+    "httpx>=0.24.0",
+    "markdownify>=0.11.0",
+    "python-slugify>=8.0.0",
+    "python-dotenv>=1.0.0",
+    "pytz>=2024.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+demand-research = "demand_research.cli:main"
+
+[tool.setuptools]
+packages = ["demand_research"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
