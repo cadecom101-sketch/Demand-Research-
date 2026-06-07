@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 from datetime import datetime
-from demand_research.models import DemandBrief
+from demand_research.models import DemandBrief, PhaseStatus
 from demand_research.config import settings
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class MarkdownGenerator:
         """Render a single phase result."""
         lines = []
 
-        status_marker = "✓" if phase_result.status.value == "PASS" else "✗"
+        status_marker = "✓" if phase_result.status == PhaseStatus.PASS else "✗"
         lines.append(f"## {status_marker} Phase {phase_result.phase_number}: {phase_result.phase_name}")
         lines.append(f"**Status:** {phase_result.status.value}")
         lines.append(f"**Pass Condition:** {phase_result.pass_condition}")
