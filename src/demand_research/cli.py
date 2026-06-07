@@ -31,32 +31,32 @@ def cli():
 @cli.command()
 @click.option(
     "--name",
-    prompt="Product name",
+    default=None,
     help="Name of the product to research",
 )
 @click.option(
     "--buyer",
-    prompt="Target buyer",
+    default=None,
     help="Who is the buyer/user?",
 )
 @click.option(
     "--job",
-    prompt="Buyer job",
+    default=None,
     help="What are they trying to do?",
 )
 @click.option(
     "--format",
-    prompt="Product format",
+    default=None,
     help="Notion template / spreadsheet / printable / etc.",
 )
 @click.option(
     "--channel",
-    prompt="Primary channel",
+    default=None,
     help="Etsy / Gumroad / Notion Marketplace / etc.",
 )
 @click.option(
     "--gap",
-    prompt="Missing mechanism hypothesis",
+    default=None,
     help="What structural mechanism is missing?",
 )
 @click.option(
@@ -65,12 +65,12 @@ def cli():
     help="Load product hypothesis from YAML/JSON file instead of prompts",
 )
 def research(
-    name: str,
-    buyer: str,
-    job: str,
-    format: str,
-    channel: str,
-    gap: str,
+    name: Optional[str],
+    buyer: Optional[str],
+    job: Optional[str],
+    format: Optional[str],
+    channel: Optional[str],
+    gap: Optional[str],
     from_file: Optional[str],
 ):
     """Run demand research workflow for a product idea."""
@@ -78,6 +78,20 @@ def research(
     if from_file:
         hypothesis = load_hypothesis_from_file(from_file)
     else:
+        # Prompt for missing values
+        if not name:
+            name = click.prompt("Product name")
+        if not buyer:
+            buyer = click.prompt("Target buyer")
+        if not job:
+            job = click.prompt("Buyer job (what are they trying to do?)")
+        if not format:
+            format = click.prompt("Product format (Notion template / spreadsheet / etc.)")
+        if not channel:
+            channel = click.prompt("Primary channel (Etsy / Gumroad / etc.)")
+        if not gap:
+            gap = click.prompt("Missing mechanism hypothesis")
+
         hypothesis = ProductHypothesis(
             product_name=name,
             target_buyer=buyer,

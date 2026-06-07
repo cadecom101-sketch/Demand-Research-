@@ -7,6 +7,7 @@ from demand_research.models import (
     DemandBrief,
     Decision,
     PhaseResult,
+    PhaseStatus,
 )
 from demand_research.decision_engine import DecisionEngine
 from demand_research.agents.phase_agents import (
@@ -50,7 +51,7 @@ class ResearchOrchestrator:
         phase1_result = await self.phase1.run(hypothesis)
         brief.phase_1_result = phase1_result
 
-        if phase1_result.status.value == "FAIL":
+        if phase1_result.status == PhaseStatus.FAIL:
             logger.warning("Phase 1 failed: No market signals found")
             decision, reasoning, quality = self.decision_engine.decide(
                 hypothesis, [phase1_result], []
@@ -65,10 +66,11 @@ class ResearchOrchestrator:
         phase2_result = await self.phase2.run(hypothesis, phase1_result)
         brief.phase_2_result = phase2_result
 
-        if phase2_result.status.value == "FAIL":
+        if phase2_result.status == PhaseStatus.FAIL:
             logger.warning("Phase 2 failed: No buyer language found")
+            all_sources = phase1_result.sources_collected + phase2_result.sources_collected
             decision, reasoning, quality = self.decision_engine.decide(
-                hypothesis, [phase1_result, phase2_result], phase1_result.sources_collected
+                hypothesis, [phase1_result, phase2_result], all_sources
             )
             brief.decision = decision
             brief.decision_reasoning = reasoning
@@ -77,12 +79,16 @@ class ResearchOrchestrator:
 
         # Phase 3: Price Band Mapping
         logger.info("Running Phase 3: Price Band Mapping")
-        phase3_result = await self.phase3.run(hypothesis, phase1_result)
+        phase3_result = await self.phase3.run(hypothesis, phase2_result)
         brief.phase_3_result = phase3_result
 
-        if phase3_result.status.value == "FAIL":
+        if phase3_result.status == PhaseStatus.FAIL:
             logger.warning("Phase 3 failed: No competitor pricing found")
-            all_sources = phase1_result.sources_collected + phase2_result.sources_collected
+            all_sources = (
+                phase1_result.sources_collected
+                + phase2_result.sources_collected
+                + phase3_result.sources_collected
+            )
             decision, reasoning, quality = self.decision_engine.decide(
                 hypothesis, [phase1_result, phase2_result, phase3_result], all_sources
             )
@@ -96,12 +102,13 @@ class ResearchOrchestrator:
         phase4_result = await self.phase4.run(hypothesis, phase3_result)
         brief.phase_4_result = phase4_result
 
-        if phase4_result.status.value == "FAIL":
+        if phase4_result.status == PhaseStatus.FAIL:
             logger.warning("Phase 4 failed: Could not analyze competitors")
             all_sources = (
                 phase1_result.sources_collected
                 + phase2_result.sources_collected
                 + phase3_result.sources_collected
+                + phase4_result.sources_collected
             )
             decision, reasoning, quality = self.decision_engine.decide(
                 hypothesis, [phase1_result, phase2_result, phase3_result, phase4_result], all_sources

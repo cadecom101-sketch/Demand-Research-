@@ -80,12 +80,13 @@ class DecisionEngine:
         if len(passed_phases) == 5:
             quality_score = self._calculate_quality_score(phase_results, all_sources)
 
-            # Check for strong signals across all dimensions
-            phase_1 = phase_results[0]
-            phase_2 = phase_results[1]
-            phase_3 = phase_results[2]
-            phase_4 = phase_results[3]
-            phase_5 = phase_results[4]
+            # Get phases by number (more robust than index access)
+            phase_results_by_number = {p.phase_number: p for p in phase_results}
+            phase_1 = phase_results_by_number.get(1)
+            phase_2 = phase_results_by_number.get(2)
+            phase_3 = phase_results_by_number.get(3)
+            phase_4 = phase_results_by_number.get(4)
+            phase_5 = phase_results_by_number.get(5)
 
             # BUILD: Strong evidence across all phases
             if quality_score >= 0.75:
@@ -158,10 +159,8 @@ class DecisionEngine:
             score += recent_ratio * 0.2
 
         # Direct quotes (not composite): up to 0.1 points
-        direct_quotes = sum(
-            1 for s in all_sources
-            if s.is_direct_quote is True or (s.buyer_language_captured and s.is_direct_quote is not False)
-        )
+        # Count sources that are explicitly marked as direct quotes
+        direct_quotes = sum(1 for s in all_sources if s.is_direct_quote is True)
         if actual_sources > 0:
             quote_ratio = direct_quotes / actual_sources
             score += min(quote_ratio * 0.1, 0.1)
