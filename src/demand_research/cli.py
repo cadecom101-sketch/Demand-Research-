@@ -107,8 +107,18 @@ def research(
     click.echo(f"Buyer: {hypothesis.target_buyer}")
     click.echo("=" * 60 + "\n")
 
-    # Run workflow
-    brief = asyncio.run(run_research_async(hypothesis))
+    # Run workflow. If research cannot run (e.g. no API credentials), fail
+    # honestly rather than emitting a fabricated BUILD/REVISE/PARK/KILL verdict.
+    from demand_research.research.claude_researcher import ResearchUnavailableError
+
+    try:
+        brief = asyncio.run(run_research_async(hypothesis))
+    except ResearchUnavailableError as exc:
+        raise click.ClickException(
+            f"Research could not run: {exc}\n"
+            "Set ANTHROPIC_API_KEY in your environment and try again. "
+            "No demand brief was written (refusing to fake a verdict)."
+        )
 
     # Generate outputs
     click.echo("\nGenerating outputs...")
@@ -118,8 +128,13 @@ def research(
     click.echo(f"✓ Markdown brief: {markdown_path}")
 
     notion_gen = NotionGenerator()
-    notion_structure = notion_gen.generate(brief)
-    click.echo(f"✓ Notion structure prepared (MCP integration pending)")
+    notion_result = notion_gen.generate(brief)
+    if notion_result["status"] == "created":
+        click.echo(f"✓ Notion page created: {notion_result.get('url', '')}")
+    elif notion_result["status"] == "skipped":
+        click.echo("• Notion skipped (set NOTION_API_KEY and NOTION_DATABASE_ID to enable)")
+    else:
+        click.echo(f"• Notion not created: {notion_result.get('reason', 'unknown error')}")
 
     # Summary
     click.echo("\n" + "=" * 60)

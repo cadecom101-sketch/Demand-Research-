@@ -10,6 +10,7 @@ from demand_research.models import (
     PhaseStatus,
 )
 from demand_research.decision_engine import DecisionEngine
+from demand_research.research.claude_researcher import ClaudeResearcher
 from demand_research.agents.phase_agents import (
     Phase1Agent,
     Phase2Agent,
@@ -24,12 +25,18 @@ logger = logging.getLogger(__name__)
 class ResearchOrchestrator:
     """Manages all 5 phases of demand research workflow."""
 
-    def __init__(self):
-        self.phase1 = Phase1Agent()
-        self.phase2 = Phase2Agent()
-        self.phase3 = Phase3Agent()
-        self.phase4 = Phase4Agent()
-        self.phase5 = Phase5Agent()
+    def __init__(self, researcher: Optional[ClaudeResearcher] = None):
+        # One researcher (one Anthropic client + config) shared across phases.
+        from demand_research.config import settings
+
+        shared = researcher or ClaudeResearcher(
+            model=settings.anthropic_model, effort=settings.anthropic_effort
+        )
+        self.phase1 = Phase1Agent(researcher=shared)
+        self.phase2 = Phase2Agent(researcher=shared)
+        self.phase3 = Phase3Agent(researcher=shared)
+        self.phase4 = Phase4Agent(researcher=shared)
+        self.phase5 = Phase5Agent(researcher=shared)
         self.decision_engine = DecisionEngine()
 
     async def run_workflow(self, hypothesis: ProductHypothesis) -> DemandBrief:

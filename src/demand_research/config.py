@@ -1,7 +1,7 @@
 """Configuration for demand research workflow."""
 
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 
@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # API Configuration
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field(default="claude-opus-4-8", alias="ANTHROPIC_MODEL")
+    anthropic_effort: str = Field(default="high", alias="ANTHROPIC_EFFORT")
 
     # Notion Configuration
     notion_api_key: str = Field(default="", alias="NOTION_API_KEY")
@@ -25,10 +26,12 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        populate_by_name = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        populate_by_name=True,
+        extra="ignore",
+    )
 
     @property
     def project_root(self) -> Path:

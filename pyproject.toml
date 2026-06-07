@@ -23,6 +23,7 @@ dependencies = [
     "python-slugify>=8.0.0",
     "python-dotenv>=1.0.0",
     "pytz>=2024.0",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
