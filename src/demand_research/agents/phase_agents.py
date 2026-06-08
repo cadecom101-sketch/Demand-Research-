@@ -414,8 +414,27 @@ class Phase3Agent(BasePhaseAgent):
             research_prompt, extract_instruction,
             default_platform=hypothesis.primary_channel, recorder=recorder,
         )
-        priced = [s for s in sources if s.price_observed is not None]
-        # Phase 3 PASSes only with 3+ real prices AND a usable low/mid/premium map.
+        # Only verified competitor prices count. Competitor leads (no price /
+        # "not captured") and general market-pricing articles do NOT satisfy
+        # price-band mapping — but they stay in the ledger with honest wording.
+        priced = [s for s in sources if classify_price_source(s) == "priced_competitor"]
+        leads = 0
+        for s in sources:
+            kind = classify_price_source(s)
+            if kind == "lead":
+                leads += 1
+                s.what_this_proves = "A relevant competitor/listing exists."
+                s.what_this_does_not_prove = (
+                    "Exact price was not captured, so this source does not satisfy "
+                    "price-band mapping."
+                )
+            elif kind == "directional":
+                s.what_this_proves = "Directional market pricing context exists."
+                s.what_this_does_not_prove = (
+                    "General market pricing only; does not establish a specific "
+                    "competitor price band."
+                )
+        # Phase 3 PASSes only with 3+ verified prices AND a usable low/mid/premium map.
         bands = _price_bands(priced)
         has_map = sum(1 for tier in bands.values() if tier) >= 1
         passed = len(priced) >= self.min_sources and has_map
@@ -425,13 +444,18 @@ class Phase3Agent(BasePhaseAgent):
             sources,
             f"{findings}\n\n{band_summary}" if band_summary else findings,
             (
-                f"Mapped {len(priced)} competitor prices into low/mid/premium bands. {band_summary}"
+                f"Mapped {len(priced)} verified competitor prices into low/mid/premium bands. "
+                f"{band_summary}"
                 if passed
-                else f"Only {len(priced)} priced competitors found; need {self.min_sources} with a price map."
+                else (
+                    f"Only {len(priced)} verified competitor prices found "
+                    f"({leads} unpriced competitor leads excluded); "
+                    f"need {self.min_sources} with a price map."
+                )
             ),
-            f"{self.min_sources}+ competitor prices with URLs and a low/mid/premium map",
+            f"{self.min_sources}+ verified competitor prices with URLs and a low/mid/premium map",
         )
-        result.details = {"price_bands": bands, "summary": band_summary}
+        result.details = {"price_bands": bands, "summary": band_summary, "lead_count": leads}
         return result
 
 
@@ -742,6 +766,43 @@ def _price_bands(priced: list[SourceCard]) -> dict:
         else:
             bands["premium"].append(p)
     return {tier: sorted(vals) for tier, vals in bands.items()}
+
+
+# Markers that flag a "general market pricing" article (directional context only,
+# never a verified competitor price). e.g. SendOwl-style pricing guides.
+_DIRECTIONAL_PRICE_MARKERS = (
+    "sendowl", "pricing guide", "price guide", "how much should", "how to price",
+    "market range", "ultimate guide", "pricing strategy", "/blog", "blog post",
+    "general pricing", "price your", "pricing tips", "guide to pricing",
+)
+
+
+def _price_not_captured(card: SourceCard) -> bool:
+    """True if the source explicitly says the exact price was not captured."""
+    text = (card.what_this_does_not_prove or "").lower()
+    return "not captured" in text
+
+
+def _is_directional_price(card: SourceCard) -> bool:
+    """True if the source is a general market-pricing article, not a competitor."""
+    hay = (
+        f"{card.source_name} {card.url} {card.gap_note or ''} {card.what_this_proves or ''}"
+    ).lower()
+    return any(m in hay for m in _DIRECTIONAL_PRICE_MARKERS)
+
+
+def classify_price_source(card: SourceCard) -> str:
+    """Classify a Phase 3 source: priced_competitor | directional | lead.
+
+    Only `priced_competitor` may satisfy price-band mapping or support the
+    workable-price-band claim. A competitor lead (no observed price, or an
+    explicit 'not captured') and a directional market article do not.
+    """
+    if card.price_observed is None or _price_not_captured(card):
+        return "lead"
+    if _is_directional_price(card):
+        return "directional"
+    return "priced_competitor"
 
 
 _AESTHETIC_MARKERS = (

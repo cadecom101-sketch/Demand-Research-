@@ -33,6 +33,7 @@ from demand_research.agents.phase_agents import (
     Phase3Agent,
     Phase4Agent,
     Phase5Agent,
+    classify_price_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,9 @@ class ResearchOrchestrator:
         # Structured phase artifacts (Patches 4/5/6): price bands, competitor
         # map, missing-mechanism gap — derived from the graded sources so they
         # link by source_id.
-        price_bands = self._build_price_bands(run_id, brief, phase_cards, recorder)
+        price_bands, price_lead_count, directional = self._build_price_bands(
+            run_id, brief, phase_cards, recorder
+        )
         competitors = self._build_competitor_map(run_id, brief, phase_cards, recorder)
         missing_mechanism = self._build_missing_mechanism(run_id, brief, phase_cards, recorder)
 
@@ -148,7 +151,22 @@ class ResearchOrchestrator:
         brief.run_status = run_status
         brief.fatal_gaps = outcome.fatal_gaps
 
-        claims = build_claims(run_id, brief, graded, min_count=self.decision_engine.min_sources_per_phase)
+        # The price-band claim is computed from verified price artifacts ONLY,
+        # never from generic Phase 3 competitor-lead source cards.
+        claims = build_claims(
+            run_id, brief, graded,
+            min_count=self.decision_engine.min_sources_per_phase,
+            price_artifacts=price_bands,
+            price_lead_count=price_lead_count,
+            directional=directional,
+        )
+
+        what_not_proves = _what_not_proves(claims)
+        if brief.phase_3_result is not None and len(price_bands) == 0:
+            what_not_proves += (
+                " Exact competitor price bands were not established "
+                f"(0 verified competitor prices captured; {price_lead_count} unpriced leads)."
+            )
 
         audit_core = {
             "evidence_stage": brief.evidence_stage.value,
@@ -164,8 +182,10 @@ class ResearchOrchestrator:
             "run_status": run_status,
             "next_experiment": _next_experiment(outcome.decision, hypothesis),
             "what_proves": _what_proves(claims),
-            "what_not_proves": _what_not_proves(claims),
+            "what_not_proves": what_not_proves,
             "what_would_change": _what_would_change(outcome),
+            "price_leads": price_lead_count,
+            "directional": directional,
         }
 
         if recorder is not None:
@@ -255,12 +275,22 @@ class ResearchOrchestrator:
     # ------------------------------------------------------------------ #
     # Structured phase artifacts
     # ------------------------------------------------------------------ #
-    def _build_price_bands(self, run_id, brief, phase_cards, recorder) -> List[dict]:
+    def _build_price_bands(self, run_id, brief, phase_cards, recorder):
+        """Return (verified_price_records, lead_count, directional_records).
+
+        Only verified competitor prices are written to price_band_artifacts.jsonl.
+        Competitor leads (no observed price) and general market-pricing articles
+        (directional) are NOT written there and do NOT count as price artifacts.
+        """
         records: List[dict] = []
+        directional: List[dict] = []
+        lead_count = 0
         if brief.phase_3_result is None:
-            return records
+            return records, lead_count, directional
         for sid, card in phase_cards.get(3, []):
-            if card.price_observed is None:
+            kind = classify_price_source(card)
+            if kind == "lead":
+                lead_count += 1
                 continue
             d = card.details or {}
             record = {
@@ -275,10 +305,15 @@ class ResearchOrchestrator:
                 "screenshot_filename": card.screenshot_filename,
                 "price_tier": _tier_for(card.price_observed),
             }
+            if kind == "directional":
+                record["directional"] = True
+                directional.append(record)
+                continue
+            # Verified priced competitor — the only kind that is a price artifact.
             records.append(record)
             if recorder is not None:
                 recorder.log_price_band(record)
-        return records
+        return records, lead_count, directional
 
     def _build_competitor_map(self, run_id, brief, phase_cards, recorder) -> List[dict]:
         records: List[dict] = []

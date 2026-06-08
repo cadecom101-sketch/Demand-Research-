@@ -35,6 +35,9 @@ def build_claims(
     graded: List[GradedSource],
     *,
     min_count: int = 3,
+    price_artifacts: Optional[List[dict]] = None,
+    price_lead_count: int = 0,
+    directional: Optional[List[dict]] = None,
 ) -> List[ClaimLedgerEntry]:
     """Construct the claim ledger for a brief.
 
@@ -90,18 +93,58 @@ def build_claims(
             ),
         ))
 
-    # 3. Channel viability / price band — Grade C.
+    # 3. Channel viability / price band — supported ONLY by verified price
+    # artifacts (specific competitor URL + observed price). Generic Phase 3
+    # competitor leads and general market-pricing articles never satisfy it.
     if brief.phase_3_result is not None:
         n += 1
-        ids = ids_for(3)
-        status = _status_for(ids, best_grade(grades_for(3)), "C", min_count)
+        verified = [
+            r for r in (price_artifacts or [])
+            if r.get("url") and isinstance(r.get("price_observed"), (int, float))
+            and not r.get("directional")
+        ]
+        supporting = [r["source_id"] for r in verified if r.get("source_id")]
+        n_verified = len(verified)
+        if n_verified >= min_count:
+            status = "supported"
+        elif n_verified >= 1:
+            status = "partially_supported"
+        else:
+            status = "unsupported"
+        if n_verified == 0 and price_lead_count > 0:
+            reason = (
+                f"{price_lead_count} competitor leads were found, but 0 verified "
+                "competitor prices were captured. Competitor leads do not satisfy "
+                "the price-band requirement."
+            )
+        elif n_verified == 0:
+            reason = "No verified competitor prices were captured."
+        else:
+            reason = (
+                f"{n_verified} verified competitor prices captured (need {min_count}); "
+                f"{price_lead_count} unpriced competitor leads excluded."
+            )
         claims.append(ClaimLedgerEntry(
             claim_id=f"C{n:03d}", run_id=run_id,
             claim=f"A workable price band exists on {hyp.primary_channel} for this product.",
             claim_type="channel_viability", required_evidence_grade="C",
-            supporting_source_ids=ids, status=status, confidence=_confidence_for(status),
-            reason=f"{len(ids)} priced competitor listings mapped (need {min_count}).",
+            supporting_source_ids=supporting, status=status, confidence=_confidence_for(status),
+            reason=reason,
         ))
+        # Weaker, separate directional-context claim — never the price-band claim.
+        if directional:
+            n += 1
+            dids = [r.get("source_id") for r in directional if r.get("source_id")]
+            claims.append(ClaimLedgerEntry(
+                claim_id=f"C{n:03d}", run_id=run_id,
+                claim="Directional market pricing context exists.",
+                claim_type="channel_viability", required_evidence_grade="D",
+                supporting_source_ids=dids, status="partially_supported", confidence=0.4,
+                reason=(
+                    f"{len(directional)} general market-pricing article(s) provide directional "
+                    "context only; they do not establish a competitor price band."
+                ),
+            ))
 
     # 4. Competitor density — Grade C.
     if brief.phase_4_result is not None:

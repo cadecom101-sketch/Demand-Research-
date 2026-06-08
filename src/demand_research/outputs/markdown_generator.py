@@ -116,24 +116,51 @@ class _Renderer:
         msg = self._incomplete(self.brief.phase_3_result is not None)
         if msg:
             return L + [msg, ""]
-        bands = (self.brief.phase_3_result.details or {}).get("price_bands", {})
-        records = self.audit.get("price_bands", [])
-        if not records and not any(bands.values()):
-            return L + ["No competitor prices were captured.", ""]
+        details = self.brief.phase_3_result.details or {}
+        bands = details.get("price_bands", {})
+        records = self.audit.get("price_bands", [])          # verified prices only
+        lead_count = self.audit.get("price_leads", details.get("lead_count", 0))
+        directional = self.audit.get("directional", [])
+
+        L.append(f"**Verified competitor prices:** {len(records)}  |  "
+                 f"**Competitor leads (no price captured):** {lead_count}  |  "
+                 f"**Directional pricing articles:** {len(directional)}")
+        L.append("")
+
+        if not records:
+            L.append("No *verified* competitor prices were captured.")
+            if lead_count:
+                L.append(f"{lead_count} competitor lead(s) were found but lacked a specific "
+                         "observed price, so they do not establish a price band.")
+            if directional:
+                L.append(f"{len(directional)} general market-pricing article(s) provide "
+                         "directional context only.")
+            L.append("")
+            L.append("**What price evidence does NOT prove:** exact competitor price bands were "
+                     "not established for this product.")
+            L.append("")
+            return L
+
         for tier in ("low", "mid", "premium"):
             vals = bands.get(tier, [])
             pretty = ", ".join(f"${v:g}" for v in vals) if vals else "—"
             L.append(f"- **{tier.capitalize()} tier:** {pretty}")
-        if records:
+        L.append("")
+        L.append("**Verified competitor prices:**")
+        L.append("")
+        L.append("| Competitor | Price | Tier | Currency | URL |")
+        L.append("| ---------- | ----- | ---- | -------- | --- |")
+        for r in records:
+            price = r.get("price_observed")
+            price_s = f"${price:g}" if isinstance(price, (int, float)) else "—"
+            L.append(f"| {r.get('competitor_name','')} | {price_s} | {r.get('price_tier','')} | "
+                     f"{r.get('currency','')} | {r.get('url','')} |")
+        if directional:
             L.append("")
-            L.append("| Competitor | Price | Tier | Currency | URL |")
-            L.append("| ---------- | ----- | ---- | -------- | --- |")
-            for r in records:
-                price = r.get("price_observed")
-                price_s = f"${price:g}" if isinstance(price, (int, float)) else "—"
-                L.append(f"| {r.get('competitor_name','')} | {price_s} | {r.get('price_tier','')} | "
-                         f"{r.get('currency','')} | {r.get('url','')} |")
-        supported = (self.brief.phase_3_result.details or {}).get("summary", "")
+            L.append("**Directional pricing context (not competitor prices):**")
+            for r in directional:
+                L.append(f"- {r.get('competitor_name','')} — {r.get('url','')}")
+        supported = details.get("summary", "")
         L.append("")
         L.append(f"**Supported price range:** {supported or 'see tiers above.'}")
         L.append("**What price evidence does NOT prove:** that buyers will pay this price for "
