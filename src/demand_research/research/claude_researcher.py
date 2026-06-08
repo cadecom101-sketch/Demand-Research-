@@ -44,6 +44,10 @@ class ResearchResult:
 
     text: str
     citations: list[str] = field(default_factory=list)
+    # Provider-level search attempts captured from server_tool_use /
+    # web_search_tool_result blocks: each is a dict with query, status,
+    # result_count, result_urls, error_message, search_provider.
+    search_attempts: list[dict] = field(default_factory=list)
 
 
 def _default_client() -> _AnthropicLike:
@@ -110,6 +114,10 @@ class ClaudeResearcher:
         except Exception as exc:  # noqa: BLE001
             raise ResearchUnavailableError(f"Web research request failed: {exc}") from exc
 
+        # Accumulate search attempts across the whole pause_turn loop so the
+        # audit trail captures every query, not just the final turn's.
+        attempts: list[dict] = self._collect_search_attempts(response)
+
         continuations = 0
         while getattr(response, "stop_reason", None) == "pause_turn" and continuations < MAX_PAUSE_CONTINUATIONS:
             messages.append({"role": "assistant", "content": response.content})
@@ -122,12 +130,16 @@ class ClaudeResearcher:
                 output_config={"effort": self.effort},
                 messages=messages,
             )
+            attempts.extend(self._collect_search_attempts(response))
             continuations += 1
 
         text = self._collect_text(response)
         citations = self._collect_citations(response)
-        logger.info("Web research returned %d chars, %d citations", len(text), len(citations))
-        return ResearchResult(text=text, citations=citations)
+        logger.info(
+            "Web research returned %d chars, %d citations, %d search attempts",
+            len(text), len(citations), len(attempts),
+        )
+        return ResearchResult(text=text, citations=citations, search_attempts=attempts)
 
     # ------------------------------------------------------------------ #
     # Stage 2: structured extraction (no tools -> no citation conflict)
@@ -197,6 +209,55 @@ class ClaudeResearcher:
             for citation in getattr(block, "citations", None) or []:
                 _add(getattr(citation, "url", None))
         return urls
+
+    @staticmethod
+    def _collect_search_attempts(response: Any) -> list[dict]:
+        """Pair each server_tool_use web_search query with its result block.
+
+        This captures the *actual* queries the server-side tool ran, plus the
+        result count and a results_found / zero_results / tool_error /
+        rate_limited status — logged whether or not anything was found.
+        """
+        attempts: list[dict] = []
+        pending_query: Optional[str] = None
+
+        def _get(obj: Any, key: str) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key)
+            return getattr(obj, key, None)
+
+        for block in getattr(response, "content", []) or []:
+            btype = getattr(block, "type", None)
+            if btype == "server_tool_use" and getattr(block, "name", None) == "web_search":
+                inp = getattr(block, "input", None)
+                pending_query = _get(inp, "query") if inp is not None else None
+            elif btype == "web_search_tool_result":
+                content_val = getattr(block, "content", None)
+                query = pending_query or ""
+                if isinstance(content_val, list):
+                    urls = [u for u in (_get(i, "url") for i in content_val) if u]
+                    attempts.append({
+                        "query": query,
+                        "result_count": len(content_val),
+                        "result_urls": urls,
+                        "status": "results_found" if content_val else "zero_results",
+                        "error_message": None,
+                        "search_provider": "anthropic_web_search",
+                    })
+                else:
+                    err = _get(content_val, "error_code") or _get(content_val, "error")
+                    rate_codes = {"max_uses_exceeded", "too_many_requests", "rate_limited"}
+                    status = "rate_limited" if str(err) in rate_codes else "tool_error"
+                    attempts.append({
+                        "query": query,
+                        "result_count": 0,
+                        "result_urls": [],
+                        "status": status,
+                        "error_message": str(err) if err else "search tool error",
+                        "search_provider": "anthropic_web_search",
+                    })
+                pending_query = None
+        return attempts
 
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:

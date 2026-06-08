@@ -16,6 +16,7 @@ class PhaseStatus(str, Enum):
 class Decision(str, Enum):
     """Enum for final product decision."""
     BUILD = "BUILD"
+    TEST = "TEST"
     REVISE = "REVISE"
     PARK = "PARK"
     KILL = "KILL"
@@ -75,6 +76,14 @@ class DemandBrief(BaseModel):
     evidence_quality_score: float = Field(ge=0.0, le=1.0)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Audit / provenance (populated by the orchestrator + RunRecorder). The
+    # `audit` bundle carries the scorecard, hard-gate results, claim ledger,
+    # and search/rejected summaries that the markdown brief surfaces.
+    run_id: Optional[str] = None
+    run_status: str = "success"  # success | partial | failed
+    fatal_gaps: List[str] = Field(default_factory=list)
+    audit: Optional[dict] = None
 
     def all_sources(self) -> List[SourceCard]:
         """Collect all sources from all phases."""

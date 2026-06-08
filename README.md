@@ -133,6 +133,42 @@ Tests assert: all-pass → BUILD/REVISE, Phase 1 empty → KILL, placeholder URL
 are dropped, markdown renders, missing credentials raise (never fake a verdict),
 and JSON parsing is defensive.
 
+## Trust Standard
+
+This repository is designed to prevent premature product building.
+
+A demand brief is not trusted unless the run preserves:
+
+1. the exact searches attempted,
+2. the sources found,
+3. the sources rejected,
+4. the reasons sources were rejected,
+5. the direct buyer-language artifacts used,
+6. the claims made,
+7. the source IDs supporting each claim,
+8. the evidence score breakdown,
+9. the hard gates that passed or failed,
+10. the run conditions needed for rerun comparison.
+
+The final markdown brief is only the human-readable summary. **The run folder is
+the audit trail.** Every run writes `runs/{run_id}/`:
+
+```
+runs/{run_id}/
+  run_manifest.json               # model, commit, prompts, counts, decision
+  search_log.jsonl                # every search attempt (incl. zero-result/errors)
+  rejected_sources.jsonl          # every dropped source + reason + rule
+  source_ledger.jsonl             # every validated source, graded A/B/C/D
+  buyer_language_artifacts.jsonl  # verbatim quotes linked to source IDs
+  claim_ledger.jsonl              # each claim + supporting source IDs + status
+  evidence_scorecard.json         # the visible scoring formula + components
+  demand_brief.md                 # human-readable summary
+  demand_brief.json               # machine-readable brief
+```
+
+The grading rules, phase requirements, hard gates, and scoring formula are
+specified in [`docs/EVIDENCE_RULES.md`](docs/EVIDENCE_RULES.md).
+
 ## Methodology
 
 This implements an E0 → E1 demand-brief workflow. The discipline is the point:

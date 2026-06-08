@@ -107,17 +107,23 @@ def research(
     click.echo(f"Buyer: {hypothesis.target_buyer}")
     click.echo("=" * 60 + "\n")
 
-    # Run workflow. If research cannot run (e.g. no API credentials), fail
-    # honestly rather than emitting a fabricated BUILD/REVISE/PARK/KILL verdict.
+    # Every run gets a durable truth-layer folder under runs/{run_id}/.
+    from demand_research.audit.recorder import RunRecorder
     from demand_research.research.claude_researcher import ResearchUnavailableError
 
+    recorder = RunRecorder(hypothesis, model_name=settings.anthropic_model)
+    click.echo(f"Audit run folder: {recorder.run_dir}\n")
+
+    # Run workflow. If research cannot run (e.g. no API credentials), fail
+    # honestly rather than emitting a fabricated BUILD/REVISE/PARK/KILL verdict.
     try:
-        brief = asyncio.run(run_research_async(hypothesis))
+        brief = asyncio.run(run_research_async(hypothesis, recorder))
     except ResearchUnavailableError as exc:
         raise click.ClickException(
             f"Research could not run: {exc}\n"
             "Set ANTHROPIC_API_KEY in your environment and try again. "
-            "No demand brief was written (refusing to fake a verdict)."
+            "No demand brief was written (refusing to fake a verdict). "
+            f"A failed-run manifest was recorded at: {recorder.run_dir}"
         )
 
     # Generate outputs
@@ -126,6 +132,7 @@ def research(
     markdown_gen = MarkdownGenerator()
     markdown_path = markdown_gen.generate(brief)
     click.echo(f"✓ Markdown brief: {markdown_path}")
+    click.echo(f"✓ Audit trail: {recorder.run_dir}")
 
     notion_gen = NotionGenerator()
     notion_result = notion_gen.generate(brief)
@@ -203,10 +210,10 @@ def load_hypothesis_from_file(file_path: str) -> ProductHypothesis:
     return ProductHypothesis(**data)
 
 
-async def run_research_async(hypothesis: ProductHypothesis):
+async def run_research_async(hypothesis: ProductHypothesis, recorder=None):
     """Run research workflow asynchronously."""
     orchestrator = ResearchOrchestrator()
-    brief = await orchestrator.run_workflow(hypothesis)
+    brief = await orchestrator.run_workflow(hypothesis, recorder=recorder)
     return brief
 
 

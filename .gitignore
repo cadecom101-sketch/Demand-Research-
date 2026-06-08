@@ -16,3 +16,8 @@ env/
 data/cache/
 data/screenshots/*.png
 data/screenshots/*.jpg
+
+# Per-run audit folders are machine-generated. Keep the directory, ignore the
+# generated runs (force-add a specific run if you want to commit its trail).
+runs/*
+!runs/.gitkeep

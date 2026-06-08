@@ -94,12 +94,25 @@ class BasePhaseAgent:
         extract_instruction: str,
         default_platform: str,
         search_phrase: Optional[str] = None,
+        recorder: Optional[Any] = None,
     ) -> tuple[list[SourceCard], str]:
         """Run web research -> structured extraction -> validation.
 
+        Every search attempt, the exact phase prompt, and every rejected source
+        are streamed to the run recorder (when present) so the run is auditable.
+
         Returns (validated_sources, findings_summary).
         """
+        phase_id = f"phase_{self.phase_number}"
+        if recorder is not None:
+            recorder.log_phase_prompt(phase_id, self.phase_name, research_prompt)
+
         result = self.researcher.research(research_prompt, system=RESEARCH_SYSTEM)
+
+        # Log searches even when the pass returns no usable text.
+        if recorder is not None:
+            recorder.log_searches(phase_id, self.phase_name, result.search_attempts)
+
         if not result.text:
             return [], "Web research returned no usable findings."
 
@@ -116,22 +129,37 @@ class BasePhaseAgent:
             system=EXTRACT_SYSTEM,
         )
         raw_sources = data.get("sources", []) if isinstance(data, dict) else []
+        if recorder is not None:
+            recorder.bump_raw(len(raw_sources))
 
         cards: list[SourceCard] = []
         for raw in raw_sources:
             card = self._build_card(len(cards) + 1, raw, default_platform, search_phrase)
             if card is None:
+                # Could not even construct a card — almost always a missing/bad URL.
+                if recorder is not None:
+                    recorder.log_rejected(
+                        phase_id, self.phase_name, raw if isinstance(raw, dict) else {},
+                        reason="missing_url", validator_rule="build_card",
+                    )
                 continue
             ok, issues = self.validator.validate_source(card)
             if ok:
                 cards.append(card)
             else:
+                reason, rule = _classify_rejection(issues)
                 logger.info(
                     "Dropped source %r in %s: %s",
                     raw.get("source_name") if isinstance(raw, dict) else raw,
                     self.phase_name,
                     "; ".join(issues),
                 )
+                if recorder is not None:
+                    recorder.log_rejected(
+                        phase_id, self.phase_name,
+                        raw if isinstance(raw, dict) else {},
+                        reason=reason, validator_rule=rule,
+                    )
         return cards, result.text.strip()
 
     def _build_card(
@@ -193,7 +221,9 @@ class Phase1Agent(BasePhaseAgent):
     def __init__(self, researcher: Optional[ClaudeResearcher] = None):
         super().__init__(1, "Signal Discovery", min_sources=3, researcher=researcher)
 
-    async def run(self, hypothesis: ProductHypothesis) -> PhaseResult:
+    async def run(
+        self, hypothesis: ProductHypothesis, recorder: Optional[Any] = None
+    ) -> PhaseResult:
         logger.info("Phase 1: signal discovery — %s", hypothesis.product_name)
         product_type = self.collector.detect_product_type(
             hypothesis.product_name, hypothesis.target_buyer, hypothesis.primary_channel
@@ -219,6 +249,7 @@ class Phase1Agent(BasePhaseAgent):
             extract_instruction,
             default_platform=hypothesis.primary_channel,
             search_phrase=hypothesis.product_name,
+            recorder=recorder,
         )
         passed = len(sources) >= self.min_sources
         return self._result(
@@ -240,7 +271,12 @@ class Phase2Agent(BasePhaseAgent):
     def __init__(self, researcher: Optional[ClaudeResearcher] = None):
         super().__init__(2, "Buyer Language Mining", min_sources=3, researcher=researcher)
 
-    async def run(self, hypothesis: ProductHypothesis, phase1_result: PhaseResult) -> PhaseResult:
+    async def run(
+        self,
+        hypothesis: ProductHypothesis,
+        phase1_result: PhaseResult,
+        recorder: Optional[Any] = None,
+    ) -> PhaseResult:
         logger.info("Phase 2: buyer language — %s", hypothesis.product_name)
         research_prompt = (
             f"Find REAL buyer/seller language about the pain behind this job:\n"
@@ -279,19 +315,27 @@ class Phase2Agent(BasePhaseAgent):
             "when it is verbatim; use false for paraphrase/composite."
         )
         sources, findings = self._collect_sources(
-            research_prompt, extract_instruction, default_platform="Reddit"
+            research_prompt, extract_instruction, default_platform="Reddit", recorder=recorder
         )
-        passed = len(sources) >= self.min_sources
+        # Hard gate: Phase 2 PASSes only on genuine, verbatim buyer-language
+        # artifacts. A listing or paraphrase (Grade C/D) cannot satisfy a
+        # buyer-language requirement — see docs/EVIDENCE_RULES.md.
+        artifacts = [s for s in sources if s.is_direct_quote and s.buyer_language_captured]
+        passed = len(artifacts) >= self.min_sources
         return self._result(
             PhaseStatus.PASS if passed else PhaseStatus.FAIL,
             sources,
             findings,
             (
-                f"Captured {len(sources)} real buyer-language artifacts."
+                f"Captured {len(artifacts)} verbatim buyer-language artifacts "
+                f"(from {len(sources)} sources)."
                 if passed
-                else f"Only {len(sources)} buyer quotes found; need {self.min_sources}."
+                else (
+                    f"Only {len(artifacts)} verbatim buyer-language artifacts "
+                    f"(from {len(sources)} sources); need {self.min_sources}."
+                )
             ),
-            f"{self.min_sources}+ real buyer-language artifacts (verbatim quotes with attribution)",
+            f"{self.min_sources}+ verbatim buyer-language artifacts (direct quotes with attribution)",
         )
 
 
@@ -301,7 +345,12 @@ class Phase3Agent(BasePhaseAgent):
     def __init__(self, researcher: Optional[ClaudeResearcher] = None):
         super().__init__(3, "Price Band Mapping", min_sources=3, researcher=researcher)
 
-    async def run(self, hypothesis: ProductHypothesis, phase2_result: PhaseResult) -> PhaseResult:
+    async def run(
+        self,
+        hypothesis: ProductHypothesis,
+        phase2_result: PhaseResult,
+        recorder: Optional[Any] = None,
+    ) -> PhaseResult:
         logger.info("Phase 3: price band mapping — %s", hypothesis.product_name)
         research_prompt = (
             f"Find real prices of products comparable to: {hypothesis.product_name} "
@@ -315,7 +364,8 @@ class Phase3Agent(BasePhaseAgent):
             "price in the price field and its listing URL."
         )
         sources, findings = self._collect_sources(
-            research_prompt, extract_instruction, default_platform=hypothesis.primary_channel
+            research_prompt, extract_instruction,
+            default_platform=hypothesis.primary_channel, recorder=recorder,
         )
         priced = [s for s in sources if s.price_observed is not None]
         passed = len(priced) >= self.min_sources
@@ -339,7 +389,12 @@ class Phase4Agent(BasePhaseAgent):
     def __init__(self, researcher: Optional[ClaudeResearcher] = None):
         super().__init__(4, "Competitor Presence", min_sources=3, researcher=researcher)
 
-    async def run(self, hypothesis: ProductHypothesis, phase3_result: PhaseResult) -> PhaseResult:
+    async def run(
+        self,
+        hypothesis: ProductHypothesis,
+        phase3_result: PhaseResult,
+        recorder: Optional[Any] = None,
+    ) -> PhaseResult:
         logger.info("Phase 4: competitor presence — %s", hypothesis.product_name)
         known = "\n".join(
             f"- {s.source_name}: {s.url}" for s in phase3_result.sources_collected
@@ -361,7 +416,8 @@ class Phase4Agent(BasePhaseAgent):
             "gap_note, with the competitor URL in url."
         )
         sources, findings = self._collect_sources(
-            research_prompt, extract_instruction, default_platform=hypothesis.primary_channel
+            research_prompt, extract_instruction,
+            default_platform=hypothesis.primary_channel, recorder=recorder,
         )
         # Fall back to Phase 3 competitors if fresh structural search was thin.
         if len(sources) < self.min_sources and phase3_result.sources_collected:
@@ -387,7 +443,12 @@ class Phase5Agent(BasePhaseAgent):
         # Synthesis phase: it judges, it doesn't collect new sources.
         super().__init__(5, "Missing-Mechanism Gap", min_sources=0, researcher=researcher)
 
-    async def run(self, hypothesis: ProductHypothesis, phase4_result: PhaseResult) -> PhaseResult:
+    async def run(
+        self,
+        hypothesis: ProductHypothesis,
+        phase4_result: PhaseResult,
+        recorder: Optional[Any] = None,
+    ) -> PhaseResult:
         logger.info("Phase 5: missing-mechanism gap — %s", hypothesis.product_name)
         competitor_summary = "\n".join(
             f"- {s.source_name} ({s.url}): {s.gap_note or 'structure not captured'}"
@@ -405,6 +466,8 @@ class Phase5Agent(BasePhaseAgent):
             'Return JSON: {"is_structural": true|false, "gap_statement": "...", '
             '"reason": "..."}'
         )
+        if recorder is not None:
+            recorder.log_phase_prompt(f"phase_{self.phase_number}", self.phase_name, instruction)
         data = self.researcher.extract(
             findings=competitor_summary,
             instruction=instruction,
@@ -426,6 +489,35 @@ class Phase5Agent(BasePhaseAgent):
             reason.strip() or ("Structural gap identified." if passed else "Gap appears non-structural."),
             "Specific, structural missing mechanism identified (not feature-based)",
         )
+
+
+# ---------------------------------------------------------------------- #
+# Rejection classification
+# ---------------------------------------------------------------------- #
+def _classify_rejection(issues: list[str]) -> tuple[str, str]:
+    """Map validator issue strings to a durable rejection_reason + rule.
+
+    Returns the first (most specific) matching reason so the rejected-source
+    log is queryable by category, not just free text.
+    """
+    joined = " ; ".join(issues)
+    low = joined.lower()
+    # Order matters: most specific / most serious first.
+    if "ai-generated" in low or "generic/templated" in low:
+        return "ai_speak_detected", joined
+    if "placeholder domain" in low:
+        return "inaccessible", joined
+    if "url is missing" in low or "does not use http" in low:
+        return "missing_url", joined
+    if "suspiciously short" in low:
+        return "inaccessible", joined
+    if "older than" in low or "future" in low:
+        return "stale", joined
+    if "quote is missing" in low:
+        return "missing_required_quote", joined
+    if "price" in low:
+        return "other", joined
+    return "other", joined
 
 
 # ---------------------------------------------------------------------- #
