@@ -317,22 +317,43 @@ class Phase2Agent(BasePhaseAgent):
         sources, findings = self._collect_sources(
             research_prompt, extract_instruction, default_platform="Reddit", recorder=recorder
         )
-        # Hard gate: Phase 2 PASSes only on genuine, verbatim buyer-language
-        # artifacts. A listing or paraphrase (Grade C/D) cannot satisfy a
-        # buyer-language requirement — see docs/EVIDENCE_RULES.md.
-        artifacts = [s for s in sources if s.is_direct_quote and s.buyer_language_captured]
+        # Hard gate: Phase 2 ACCEPTS only genuine, verbatim buyer-language
+        # artifacts (Grade B). Any other candidate that survived URL validation
+        # but is a listing / blog / paraphrase is a *considered-but-rejected*
+        # source and is written durably to rejected_sources.jsonl — never
+        # silently dropped. See docs/EVIDENCE_RULES.md.
+        artifacts: list[SourceCard] = []
+        considered = len(sources)
+        for card in sources:
+            if card.is_direct_quote and card.buyer_language_captured:
+                artifacts.append(card)
+            elif recorder is not None:
+                reason, rule = _phase2_rejection(card)
+                recorder.log_rejected(
+                    f"phase_{self.phase_number}", self.phase_name,
+                    {
+                        "url": str(card.url),
+                        "source_name": card.source_name,
+                        "platform": card.platform,
+                        "what_it_proves": card.what_this_proves,
+                        "buyer_language": card.buyer_language_captured or "",
+                    },
+                    reason=reason, validator_rule=rule,
+                )
+        # Only verbatim artifacts count as accepted Phase 2 sources.
         passed = len(artifacts) >= self.min_sources
         return self._result(
             PhaseStatus.PASS if passed else PhaseStatus.FAIL,
-            sources,
+            artifacts,
             findings,
             (
                 f"Captured {len(artifacts)} verbatim buyer-language artifacts "
-                f"(from {len(sources)} sources)."
+                f"({considered} candidates considered)."
                 if passed
                 else (
                     f"Only {len(artifacts)} verbatim buyer-language artifacts "
-                    f"(from {len(sources)} sources); need {self.min_sources}."
+                    f"({considered} candidates considered, "
+                    f"{considered - len(artifacts)} rejected); need {self.min_sources}."
                 )
             ),
             f"{self.min_sources}+ verbatim buyer-language artifacts (direct quotes with attribution)",
@@ -518,6 +539,22 @@ def _classify_rejection(issues: list[str]) -> tuple[str, str]:
     if "price" in low:
         return "other", joined
     return "other", joined
+
+
+def _phase2_rejection(card: SourceCard) -> tuple[str, str]:
+    """Classify why a Phase 2 candidate failed the buyer-language requirement.
+
+    A candidate reaches here only if it survived URL validation but did not
+    yield a verbatim Grade-B artifact.
+    """
+    rule = "phase2_buyer_language_requirement"
+    if not card.buyer_language_captured:
+        # No quote at all — a listing / blog / category page (Grade C content).
+        return "no_direct_buyer_language", rule
+    if not card.is_direct_quote:
+        # A quote field exists but it is a paraphrase / composite, not verbatim.
+        return "missing_required_quote", rule
+    return "wrong_artifact_type", rule
 
 
 # ---------------------------------------------------------------------- #

@@ -213,6 +213,88 @@ def test_partial_run_forbids_build_and_marks_status(tmp_path):
     assert manifest["run_status"] == "partial"
 
 
+def _grade_c_run():
+    # Phase 1 passes (Grade-C signals); Phase 2 returns generic content with no
+    # verbatim quotes -> zero buyer-language artifacts -> Phase 2 fails.
+    return [
+        [_src("signal", i) for i in range(4)],    # phase 1 (valid Grade-C)
+        [_src("content", i) for i in range(4)],   # phase 2 (no quotes)
+    ]
+
+
+def test_search_log_deduplicates_provider_and_model_reported(tmp_path):
+    rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
+    attempts = [
+        {"query": "Spent Hours  no sales", "status": "results_found", "result_count": 2,
+         "result_urls": ["u1", "u2"], "search_provider": "anthropic_web_search"},
+        # Same normalized query, model-reported -> must be dropped in favor of provider.
+        {"query": "spent hours no sales", "status": "results_found", "result_count": 2,
+         "result_urls": ["u1", "u2"], "search_provider": "model_reported_web_search"},
+        {"query": "different query", "status": "zero_results", "result_count": 0,
+         "result_urls": [], "search_provider": "anthropic_web_search"},
+    ]
+    rec.log_searches("phase_2", "Buyer Language Mining", attempts)
+    records = _read_jsonl(rec.run_dir / "search_log.jsonl")
+    assert len(records) == 2, "duplicate query should be written once"
+    spent = [r for r in records if r["search_query"].lower().strip() == "spent hours  no sales".strip()
+             or r["search_query"].lower().startswith("spent hours")]
+    assert spent and spent[0]["search_provider"] == "anthropic_web_search"
+    # Re-logging the same query in the same phase does not write it again.
+    rec.log_searches("phase_2", "Buyer Language Mining", attempts)
+    assert len(_read_jsonl(rec.run_dir / "search_log.jsonl")) == 2
+
+
+def test_phase2_rejects_candidates_when_no_artifacts(tmp_path):
+    rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
+    orch = ResearchOrchestrator(researcher=_researcher(_grade_c_run(), _GAP))
+    brief = asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
+    assert brief.phase_2_result.status == PhaseStatus.FAIL
+    rejected = _read_jsonl(rec.run_dir / "rejected_sources.jsonl")
+    phase2_rej = [r for r in rejected if r["phase_id"] == "phase_2"]
+    assert len(phase2_rej) >= 3, "non-qualifying Phase 2 candidates must be logged as rejected"
+    assert all(r["rejection_reason"] in {
+        "no_direct_buyer_language", "missing_required_quote", "not_seller_authored",
+        "generic_content", "wrong_artifact_type", "grade_c_not_allowed_for_phase_2",
+        "inaccessible", "duplicate", "other",
+    } for r in phase2_rej)
+    # buyer_language_artifacts file exists but is empty.
+    assert _read_jsonl(rec.run_dir / "buyer_language_artifacts.jsonl") == []
+
+
+def test_grade_c_only_zero_buyer_language_is_park(tmp_path):
+    rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
+    orch = ResearchOrchestrator(researcher=_researcher(_grade_c_run(), _GAP))
+    brief = asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
+    assert brief.decision == Decision.PARK
+
+
+def test_hard_gate_overrides_explain_park(tmp_path):
+    rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
+    orch = ResearchOrchestrator(researcher=_researcher(_grade_c_run(), _GAP))
+    asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
+    sc = json.loads((rec.run_dir / "evidence_scorecard.json").read_text())
+    overrides = sc["hard_gate_overrides"]
+    # Every override that fired must cap at PARK (not REVISE) for this case.
+    assert overrides, "PARK case must record explanatory gate overrides"
+    assert all("-> PARK" in o for o in overrides), overrides
+    assert any(o.startswith("buyer_language_missing") for o in overrides)
+    assert any(o.startswith("phase_2_failed") for o in overrides)
+    assert any(o.startswith("no_grade_a_or_b_evidence") for o in overrides)
+    assert not any("-> REVISE" in o for o in overrides)
+
+
+def test_json_artifacts_parse_cleanly(tmp_path):
+    rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
+    orch = ResearchOrchestrator(researcher=_researcher(_strong_sources(), _GAP))
+    asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
+    for name in ("run_manifest.json", "evidence_scorecard.json", "demand_brief.json"):
+        with (rec.run_dir / name).open() as f:
+            payload = json.load(f)  # raises if invalid / truncated
+        assert isinstance(payload, dict)
+    # No leftover temp files from the atomic writes.
+    assert not list(rec.run_dir.glob("*.tmp"))
+
+
 def test_strong_evidence_can_build(tmp_path):
     rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=_researcher(_strong_sources(), _GAP))

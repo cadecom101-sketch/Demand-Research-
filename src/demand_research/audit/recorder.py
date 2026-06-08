@@ -11,6 +11,8 @@ written to disk.
 
 import json
 import logging
+import os
+import re
 import subprocess
 from collections import Counter
 from datetime import datetime
@@ -47,6 +49,12 @@ ARTIFACT_FILES = [
 
 def _utc_now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_query(query: str) -> str:
+    """Lowercase + collapse whitespace so trivially-different spellings of the
+    same provider query collapse to one dedup key."""
+    return re.sub(r"\s+", " ", (query or "").strip().lower())
 
 
 def _repo_commit_hash() -> Optional[str]:
@@ -101,6 +109,7 @@ class RunRecorder:
 
         self._search_counts: Counter = Counter()
         self._search_total = 0
+        self._search_seen: set = set()  # (phase_id, normalized_query) already written
         self._rejected_by_reason: Counter = Counter()
         self._rejected_examples: List[dict] = []
         self._buyer_artifacts: List[dict] = []
@@ -117,8 +126,18 @@ class RunRecorder:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def _write_json(self, filename: str, payload: Any) -> None:
+        # Atomic: write to a temp file in the same dir, then os.replace so a
+        # reader never sees a half-written / unclosed JSON document.
         path = self.run_dir / filename
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _write_text(self, filename: str, text: str) -> None:
+        path = self.run_dir / filename
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
 
     # ------------------------------------------------------------------ #
     # During-phase logging
@@ -141,10 +160,37 @@ class RunRecorder:
         self.raw_source_count += max(0, count)
 
     def log_searches(self, phase_id: str, phase_name: str, attempts: List[dict]) -> None:
-        """Persist every model-reported / provider search attempt for a phase."""
+        """Persist search attempts for a phase, de-duplicated.
+
+        The same run_id + phase_id + normalized query is never written twice. If
+        both a provider-level (anthropic_web_search) and a model-reported attempt
+        exist for the same query, the provider-level record wins and the
+        model-reported duplicate is dropped.
+        """
         if not attempts:
             return
+
+        # Collapse same-query attempts within this call, preferring provider-level.
+        chosen: dict = {}
+        order: List[str] = []
         for a in attempts:
+            q = _normalize_query(a.get("query", ""))
+            existing = chosen.get(q)
+            if existing is None:
+                chosen[q] = a
+                order.append(q)
+            else:
+                ex_provider = existing.get("search_provider", "")
+                provider = a.get("search_provider", "anthropic_web_search")
+                if ex_provider != "anthropic_web_search" and provider == "anthropic_web_search":
+                    chosen[q] = a  # upgrade to the provider-level record
+
+        for q in order:
+            run_key = (phase_id, q)
+            if run_key in self._search_seen:
+                continue  # already written for this phase (cross-call duplicate)
+            self._search_seen.add(run_key)
+            a = chosen[q]
             status = a.get("status", "unknown")
             self._search_counts[status] += 1
             self._search_total += 1
@@ -269,7 +315,7 @@ class RunRecorder:
         # Render + write the human-readable brief (lazy import avoids a cycle).
         from demand_research.outputs.markdown_generator import render_markdown
         markdown_text = render_markdown(brief)
-        (self.run_dir / "demand_brief.md").write_text(markdown_text, encoding="utf-8")
+        self._write_text("demand_brief.md", markdown_text)
         self._write_json("demand_brief.json", brief.model_dump(mode="json"))
 
         # Manifest last — it summarises everything above.

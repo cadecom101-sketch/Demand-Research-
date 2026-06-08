@@ -158,68 +158,76 @@ class DecisionEngine:
         beh = int(signals.get("behavioral_intent_count", 0))
         grade_counts = signals.get("grade_counts", {}) or {}
         run_status = signals.get("run_status", "success")
+        phase2_present = bool(signals.get("phase2_present", False))
+        phase2_failed = bool(signals.get("phase2_failed", False))
+        a = int(grade_counts.get("A", 0))
+        b = int(grade_counts.get("B", 0))
+        c = int(grade_counts.get("C", 0))
 
         gates: List[GateResult] = []
         caps: List[int] = [_RANK[Decision.BUILD]]
         fatals: List[str] = []
         overrides: List[str] = []
 
+        def fail(name: str, cap: Decision, reason: str, fatal: bool = False) -> None:
+            caps.append(_RANK[cap])
+            gates.append(GateResult(gate=name, status="fail", reason=reason))
+            overrides.append(f"{name} -> {cap.value}")
+            if fatal:
+                fatals.append(reason)
+
+        def ok(name: str, reason: str) -> None:
+            gates.append(GateResult(gate=name, status="pass", reason=reason))
+
         # Gate 1 — category signal minimum (KILL/PARK floor).
         if cat >= m:
-            gates.append(GateResult(gate="category_signal_minimum", status="pass",
-                                    reason=f"{cat} category signals (need {m})."))
+            ok("category_signal_minimum", f"{cat} category signals (need {m}).")
         else:
-            cap = _RANK[Decision.KILL] if cat == 0 else _RANK[Decision.PARK]
-            caps.append(cap)
-            reason = f"only {cat} category signals (need {m}); capped at {_BY_RANK[cap].value}."
-            gates.append(GateResult(gate="category_signal_minimum", status="fail", reason=reason))
-            fatals.append(f"Category-signal gate failed: {cat} of {m} required.")
-            overrides.append(f"category_signal_minimum -> {_BY_RANK[cap].value}")
+            cap = Decision.KILL if cat == 0 else Decision.PARK
+            fail("category_signal_minimum", cap,
+                 f"only {cat} category signals (need {m}).", fatal=True)
 
-        # Gate 2 — buyer-language required for BUILD/TEST.
+        # Gate 2 — buyer-language. Missing entirely caps at PARK (can't establish
+        # pain at all); present-but-thin caps at REVISE (needs adjustment).
         if blang >= m:
-            gates.append(GateResult(gate="buyer_language_for_build", status="pass",
-                                    reason=f"{blang} verbatim buyer-language artifacts (need {m})."))
+            ok("buyer_language_sufficient", f"{blang} verbatim buyer-language artifacts (need {m}).")
+        elif blang > 0:
+            fail("buyer_language_below_threshold", Decision.REVISE,
+                 f"only {blang} verbatim buyer-language artifacts (need {m}); buyer needs revision.")
         else:
-            caps.append(_RANK[Decision.REVISE])
-            reason = (f"only {blang} verbatim buyer-language artifacts (need {m}); "
-                      f"cannot exceed REVISE.")
-            gates.append(GateResult(gate="buyer_language_for_build", status="fail", reason=reason))
-            overrides.append("buyer_language_for_build -> REVISE")
+            fail("buyer_language_missing", Decision.PARK,
+                 "no verbatim buyer-language artifacts (Grade B); buyer pain is unproven.",
+                 fatal=True)
 
-        # Gate 3 — at least some direct pain or behavioral intent for a build.
-        if blang > 0 or beh > 0:
-            gates.append(GateResult(gate="any_pain_or_behavioral", status="pass",
-                                    reason=f"{blang} buyer quotes / {beh} behavioral signals."))
+        # Gate 3 — strength of evidence. No Grade A/B at all caps at PARK.
+        if a > 0 or b > 0:
+            ok("grade_a_or_b_present", f"strong evidence present (A={a}, B={b}).")
         else:
-            caps.append(_RANK[Decision.REVISE])
-            gates.append(GateResult(gate="any_pain_or_behavioral", status="fail",
-                                    reason="no direct buyer pain and no behavioral intent; cannot BUILD."))
-            overrides.append("any_pain_or_behavioral -> REVISE")
+            fail("no_grade_a_or_b_evidence", Decision.PARK,
+                 f"no Grade A or B evidence (A={a}, B={b}); only category/competitor signals.",
+                 fatal=True)
+            if c > 0:
+                # All the evidence that exists is Grade C — a category exists but
+                # nothing proves buyer pain or intent.
+                fail("grade_c_only_ceiling", Decision.PARK,
+                     f"evidence is Grade C only (C={c}); cannot exceed PARK without "
+                     "buyer-language (B) or behavioral (A) proof.")
 
-        # Gate 4 — Grade-C ceiling (mostly weak evidence).
-        a = int(grade_counts.get("A", 0))
-        b = int(grade_counts.get("B", 0))
-        if a == 0 and b < m:
-            caps.append(_RANK[Decision.REVISE])
-            gates.append(GateResult(gate="grade_c_ceiling", status="fail",
-                                    reason=(f"evidence is mostly Grade C/D (A={a}, B={b}); "
-                                            "cannot exceed REVISE without a behavioral test.")))
-            overrides.append("grade_c_ceiling -> REVISE")
-        else:
-            gates.append(GateResult(gate="grade_c_ceiling", status="pass",
-                                    reason=f"sufficient strong evidence (A={a}, B={b})."))
+        # Gate 4 — Phase 2 outcome. A failed buyer-language phase caps at PARK.
+        if phase2_present:
+            if phase2_failed:
+                fail("phase_2_failed", Decision.PARK,
+                     "Phase 2 (buyer language) failed; cannot exceed PARK.")
+            else:
+                ok("phase_2_passed", "Phase 2 buyer-language requirement met.")
 
         # Gate 5 — tool / search failure (partial run).
         if run_status == "success":
-            gates.append(GateResult(gate="tool_failure", status="pass",
-                                    reason="run completed without tool/search failure."))
+            ok("tool_failure", "run completed without tool/search failure.")
         else:
-            caps.append(_RANK[Decision.PARK])
-            gates.append(GateResult(gate="tool_failure", status="fail",
-                                    reason=f"run status '{run_status}'; evidence collection incomplete, cannot BUILD."))
-            fatals.append(f"Run status '{run_status}': evidence collection incomplete.")
-            overrides.append("tool_failure -> PARK")
+            fail("tool_failure", Decision.PARK,
+                 f"run status '{run_status}'; evidence collection incomplete, cannot BUILD.",
+                 fatal=True)
 
         return gates, min(caps), fatals, overrides
 

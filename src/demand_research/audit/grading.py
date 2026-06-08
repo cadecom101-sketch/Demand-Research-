@@ -10,7 +10,7 @@ its audit trail can never disagree about a source's grade.
 from collections import Counter
 from typing import Optional
 
-from demand_research.models import PhaseResult, SourceCard
+from demand_research.models import PhaseResult, PhaseStatus, SourceCard
 
 # Grade ordering. A is the strongest (behavioral / purchase intent); D the weakest.
 GRADE_RANK = {"A": 4, "B": 3, "C": 2, "D": 1}
@@ -107,12 +107,17 @@ def compute_signals(phase_by_num: dict[int, PhaseResult], run_status: str) -> di
             if grade == "A":
                 behavioral_intent_count += 1
 
+    phase2_present = p2 is not None
+    phase2_failed = phase2_present and p2.status == PhaseStatus.FAIL
+
     return {
         "category_signal_count": category_signal_count,
         "buyer_language_artifact_count": buyer_language_artifact_count,
         "behavioral_intent_count": behavioral_intent_count,
         "grade_counts": dict(grade_counts),
         "run_status": run_status,
+        "phase2_present": phase2_present,
+        "phase2_failed": phase2_failed,
     }
 
 
