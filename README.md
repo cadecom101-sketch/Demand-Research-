@@ -1,14 +1,33 @@
 # Autonomous Demand Brief Research Workflow
 
-Validate a product idea with **real web evidence** before you spend build time.
-You provide a one-line product hypothesis; the workflow autonomously runs five
-evidence-gated research phases and returns a **BUILD / REVISE / PARK / KILL**
-decision backed by dated, sourced citations.
+**Demand Research is an E0 → E1-candidate evidence gate.** It helps decide
+whether a product idea earns the *next cheapest test* — not whether to build it
+today. You provide a one-line product hypothesis; the workflow autonomously runs
+five evidence-gated research phases and returns a
+**BUILD / TEST / REVISE / PARK / KILL** decision, mapped to an evidence stage
+(**E0 / E1_CANDIDATE / POST_E1**), backed by dated, sourced citations.
+
+It is **not** a vibe-based validation generator, and it is **not** optimized to
+produce BUILD decisions — it is optimized to *avoid false BUILD decisions*. The
+demand brief usually decides whether an idea earns a cheap **TEST**, not a build.
 
 The "eyes and hands" are the **Anthropic API's native web search tool** — Claude
 searches the real web (Etsy, Gumroad, Notion Marketplace, Reddit, forums),
 extracts structured source cards, and every card is validated before it counts.
 No fabricated demand, no invented quotes, no unsourced keyword volumes.
+
+> **The run folder is the truth layer.** The markdown brief is only the
+> human-readable summary.
+>
+> Find the signal.
+> Capture the buyer's words.
+> Map the price.
+> Tear down competitors.
+> Name the missing mechanism.
+> Then let the gates decide.
+
+The original methodology lives in [`docs/E0_E1_WORKFLOW.md`](docs/E0_E1_WORKFLOW.md)
+and [`docs/PROJECT_SOURCE.md`](docs/PROJECT_SOURCE.md).
 
 ## How it works
 

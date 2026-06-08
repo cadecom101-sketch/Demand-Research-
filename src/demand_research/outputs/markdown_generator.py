@@ -51,10 +51,14 @@ class _Renderer:
         L.append("")
         L += self._executive_summary()
         L += self._hypothesis()
+        L += self._evidence_stage()
         L += self._phase_results()
         L += self._score_breakdown()
         L += self._hard_gates()
         L += self._buyer_language()
+        L += self._price_band()
+        L += self._competitor_map()
+        L += self._missing_mechanism()
         L += self._claim_ledger()
         L += self._search_summary()
         L += self._rejected_summary()
@@ -76,6 +80,7 @@ class _Renderer:
         return [
             "## Executive Summary",
             f"- **Decision:** {b.decision.value}",
+            f"- **Evidence Stage:** {b.evidence_stage.value}",
             f"- **Evidence Quality:** {b.evidence_quality_score:.2%}",
             f"- **Run ID:** {b.run_id or 'n/a'}",
             f"- **Run Status:** {b.run_status}",
@@ -83,6 +88,117 @@ class _Renderer:
             f"- **Main Reason:** {b.decision_reasoning}",
             "",
         ]
+
+    def _evidence_stage(self) -> list[str]:
+        stage = self.brief.evidence_stage.value
+        meaning = {
+            "E0": "Unproven. Stays E0 — does not yet earn build time (KILL / PARK / REVISE).",
+            "E1_CANDIDATE": "Earns the next cheapest external TEST (fake-door / pre-order).",
+            "POST_E1": "Past validation; build-justified by stronger evidence.",
+        }.get(stage, "")
+        return [
+            "## Evidence Stage",
+            "",
+            f"Evidence Stage: {stage}",
+            "",
+            meaning,
+            "",
+        ]
+
+    def _incomplete(self, phase_present: bool) -> Optional[str]:
+        if phase_present:
+            return None
+        return ("This section is incomplete because an earlier hard gate capped the "
+                "decision and the phase did not run.")
+
+    def _price_band(self) -> list[str]:
+        L = ["## Price Band Mapping", ""]
+        msg = self._incomplete(self.brief.phase_3_result is not None)
+        if msg:
+            return L + [msg, ""]
+        bands = (self.brief.phase_3_result.details or {}).get("price_bands", {})
+        records = self.audit.get("price_bands", [])
+        if not records and not any(bands.values()):
+            return L + ["No competitor prices were captured.", ""]
+        for tier in ("low", "mid", "premium"):
+            vals = bands.get(tier, [])
+            pretty = ", ".join(f"${v:g}" for v in vals) if vals else "—"
+            L.append(f"- **{tier.capitalize()} tier:** {pretty}")
+        if records:
+            L.append("")
+            L.append("| Competitor | Price | Tier | Currency | URL |")
+            L.append("| ---------- | ----- | ---- | -------- | --- |")
+            for r in records:
+                price = r.get("price_observed")
+                price_s = f"${price:g}" if isinstance(price, (int, float)) else "—"
+                L.append(f"| {r.get('competitor_name','')} | {price_s} | {r.get('price_tier','')} | "
+                         f"{r.get('currency','')} | {r.get('url','')} |")
+        supported = (self.brief.phase_3_result.details or {}).get("summary", "")
+        L.append("")
+        L.append(f"**Supported price range:** {supported or 'see tiers above.'}")
+        L.append("**What price evidence does NOT prove:** that buyers will pay this price for "
+                 "*this* product — only that comparable products are listed at these prices.")
+        L.append("")
+        return L
+
+    def _competitor_map(self) -> list[str]:
+        L = ["## Competitor Presence Map", ""]
+        msg = self._incomplete(self.brief.phase_4_result is not None)
+        if msg:
+            return L + [msg, ""]
+        records = self.audit.get("competitors", [])
+        if not records:
+            return L + ["No competitors were structurally mapped.", ""]
+        L.append("**10-field competitor map:**")
+        L.append("")
+        L.append("| Competitor | Price | Target buyer | Format | Main promise | Does NOT govern |")
+        L.append("| ---------- | ----- | ------------ | ------ | ------------ | --------------- |")
+        for r in records:
+            price = r.get("price")
+            price_s = f"${price:g}" if isinstance(price, (int, float)) else "—"
+            L.append(f"| {r.get('competitor_name','')} | {price_s} | {r.get('target_buyer','') or '—'} | "
+                     f"{r.get('product_format','') or '—'} | {(r.get('main_promise','') or '—')} | "
+                     f"{(r.get('what_it_does_not_appear_to_govern','') or '—')} |")
+        L.append("")
+        L.append("**6-dimension teardown** (none / weak / present / strong / unknown):")
+        L.append("")
+        L.append("| Competitor | Demand val. | Authorship | Build gate | Listing gate | Fee stress | Post-launch loop |")
+        L.append("| ---------- | ----------- | ---------- | ---------- | ------------ | ---------- | ---------------- |")
+        for r in records:
+            L.append(f"| {r.get('competitor_name','')} | {r.get('demand_validation_score','unknown')} | "
+                     f"{r.get('authorship_evidence_score','unknown')} | {r.get('build_readiness_gate_score','unknown')} | "
+                     f"{r.get('listing_readiness_gate_score','unknown')} | {r.get('fee_stress_logic_score','unknown')} | "
+                     f"{r.get('post_launch_decision_loop_score','unknown')} |")
+        L.append("")
+        L.append("_Distinction: a product that **stores** information is not the same as a product "
+                 "that **forces** a decision. The teardown scores capture which competitors actually "
+                 "gate decisions vs. merely track._")
+        L.append("")
+        return L
+
+    def _missing_mechanism(self) -> list[str]:
+        L = ["## Missing-Mechanism Gap", ""]
+        msg = self._incomplete(self.brief.phase_5_result is not None)
+        if msg:
+            return L + [msg, ""]
+        m = self.audit.get("missing_mechanism", {}) or (self.brief.phase_5_result.details or {})
+        if not m:
+            return L + ["No missing-mechanism analysis was produced.", ""]
+        L.append(f"- **Status:** {m.get('status', 'unsupported')}")
+        L.append(f"- **Structural:** {m.get('is_structural', False)}")
+        L.append(f"- **Current competitor pattern:** {m.get('current_competitor_pattern','') or '—'}")
+        L.append(f"- **Missing mechanism:** {m.get('missing_mechanism','') or '—'}")
+        L.append(f"- **Why it matters:** {m.get('why_it_matters','') or '—'}")
+        L.append(f"- **Proposed mechanism:** {m.get('proposed_mechanism','') or '—'}")
+        L.append(f"- **Gap statement:** {m.get('gap_statement','') or '—'}")
+        L.append(f"- **What would make the gap weak:** {m.get('what_would_make_gap_weak','') or '—'}")
+        supp = ", ".join(m.get("supporting_source_ids", [])) or "—"
+        L.append(f"- **Supporting sources:** {supp}")
+        L.append("")
+        L.append("_A gap that is only 'looks better / cleaner / cheaper / more pages / different "
+                 "buyer label' is aesthetic, not structural, and is marked unsupported._")
+        L.append("")
+        return L
 
     def _hypothesis(self) -> list[str]:
         h = self.brief.product_hypothesis

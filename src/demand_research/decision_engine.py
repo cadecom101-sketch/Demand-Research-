@@ -229,6 +229,34 @@ class DecisionEngine:
                  f"run status '{run_status}'; evidence collection incomplete, cannot BUILD.",
                  fatal=True)
 
+        # Gate 6 — E0 -> E1-candidate acceptance. An idea may reach TEST/E1
+        # only with the full evidence chain: Phase 1 passed, real buyer language
+        # (or Grade-A behavioral), priced competitors, a structured competitor
+        # set, and a supported/partially-supported missing mechanism. Otherwise
+        # it cannot exceed REVISE (stays E0).
+        phase1_pass = bool(signals.get("phase1_pass", False))
+        priced = int(signals.get("phase3_priced_count", 0))
+        competitors = int(signals.get("phase4_competitor_count", 0))
+        phase5_status = signals.get("phase5_status")
+        all_present = bool(signals.get("all_phases_present", False))
+        e1_ok = (
+            all_present
+            and phase1_pass
+            and (blang >= m or beh > 0)
+            and priced >= m
+            and competitors >= m
+            and phase5_status in ("supported", "partially_supported")
+        )
+        if e1_ok:
+            ok("e1_candidate_acceptance",
+               "full evidence chain present; idea may reach TEST (E1-candidate).")
+        else:
+            fail("e1_candidate_acceptance", Decision.REVISE,
+                 "incomplete evidence chain for E1-candidate "
+                 f"(phase1_pass={phase1_pass}, buyer_lang={blang}, behavioral={beh}, "
+                 f"priced={priced}, competitors={competitors}, mechanism={phase5_status}); "
+                 "stays E0 until the chain is complete.")
+
         return gates, min(caps), fatals, overrides
 
     # ------------------------------------------------------------------ #

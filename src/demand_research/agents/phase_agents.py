@@ -53,15 +53,38 @@ _SOURCE_JSON_SHAPE = """Return JSON of this exact shape:
       "url": "https://real-source-url",
       "platform": "Etsy | Gumroad | Notion Marketplace | Reddit | YouTube | forum | other",
       "price": 19.99,                     // number, or null if not a priced listing
+      "currency": "USD",                  // or null
+      "product_type": "Notion template | spreadsheet | ... | null",
+      "what_it_promises": "the listing's main promise, or null",
+      "features_included": ["feature", "..."],   // or null
       "buyer_language": "verbatim quote", // or null if this source is not a buyer quote
       "is_direct_quote": true,            // true=verbatim, false=paraphrase/composite, null=n/a
       "what_it_proves": "one sentence",
       "what_it_does_not_prove": "one sentence",
-      "gap_note": "what this competitor does/does not govern, or null"
+      "gap_note": "what this competitor does/does not govern, or null",
+      "target_buyer": "who the competitor targets, or null",
+      "main_promise": "competitor main promise, or null",
+      "what_it_structurally_does": "tracker/planner/dashboard/gated workflow/..., or null",
+      "what_it_does_not_govern": "the decision it does NOT force, or null",
+      "teardown": {                        // Phase 4 only; use null elsewhere
+        "demand_validation": "none|weak|present|strong|unknown",
+        "authorship_evidence": "none|weak|present|strong|unknown",
+        "build_readiness_gate": "none|weak|present|strong|unknown",
+        "listing_readiness_gate": "none|weak|present|strong|unknown",
+        "fee_stress_logic": "none|weak|present|strong|unknown",
+        "post_launch_decision_loop": "none|weak|present|strong|unknown"
+      }
     }
   ]
 }
 Only include sources whose URL actually appears in the findings."""
+
+# Allowed 6-dimension teardown scores (Phase 4).
+_TEARDOWN_DIMS = (
+    "demand_validation", "authorship_evidence", "build_readiness_gate",
+    "listing_readiness_gate", "fee_stress_logic", "post_launch_decision_loop",
+)
+_TEARDOWN_SCORES = {"none", "weak", "present", "strong", "unknown"}
 
 
 class BasePhaseAgent:
@@ -185,12 +208,14 @@ class BasePhaseAgent:
                 search_phrase_used=search_phrase,
                 price_observed=_coerce_float(raw.get("price")),
                 buyer_language_captured=_coerce_str(raw.get("buyer_language")),
+                competitor_features_observed=_coerce_str_list(raw.get("features_included")),
                 what_this_proves=str(raw.get("what_it_proves") or "Observed in market research."),
                 what_this_does_not_prove=str(
                     raw.get("what_it_does_not_prove") or "Does not prove conversion demand."
                 ),
                 gap_note=_coerce_str(raw.get("gap_note")),
                 is_direct_quote=_coerce_bool(raw.get("is_direct_quote")),
+                details=_extract_details(raw),
             )
         except (ValidationError, ValueError, TypeError) as exc:
             logger.info("Could not build SourceCard from %r: %s", url, exc)
@@ -382,26 +407,32 @@ class Phase3Agent(BasePhaseAgent):
         )
         extract_instruction = (
             "From the findings, list each competitor product with a real, visible "
-            "price in the price field and its listing URL."
+            "price in the price field and its listing URL. Also capture currency, "
+            "product_type, what_it_promises, and features_included where visible."
         )
         sources, findings = self._collect_sources(
             research_prompt, extract_instruction,
             default_platform=hypothesis.primary_channel, recorder=recorder,
         )
         priced = [s for s in sources if s.price_observed is not None]
-        passed = len(priced) >= self.min_sources
-        band = _summarise_price_bands(priced)
-        return self._result(
+        # Phase 3 PASSes only with 3+ real prices AND a usable low/mid/premium map.
+        bands = _price_bands(priced)
+        has_map = sum(1 for tier in bands.values() if tier) >= 1
+        passed = len(priced) >= self.min_sources and has_map
+        band_summary = _summarise_price_bands(priced)
+        result = self._result(
             PhaseStatus.PASS if passed else PhaseStatus.FAIL,
             sources,
-            f"{findings}\n\n{band}" if band else findings,
+            f"{findings}\n\n{band_summary}" if band_summary else findings,
             (
-                f"Mapped {len(priced)} competitor prices. {band}"
+                f"Mapped {len(priced)} competitor prices into low/mid/premium bands. {band_summary}"
                 if passed
-                else f"Only {len(priced)} priced competitors found; need {self.min_sources}."
+                else f"Only {len(priced)} priced competitors found; need {self.min_sources} with a price map."
             ),
-            f"{self.min_sources}+ competitor prices with URLs",
+            f"{self.min_sources}+ competitor prices with URLs and a low/mid/premium map",
         )
+        result.details = {"price_bands": bands, "summary": band_summary}
+        return result
 
 
 class Phase4Agent(BasePhaseAgent):
@@ -432,9 +463,15 @@ class Phase4Agent(BasePhaseAgent):
             "vs. does not appear to govern."
         )
         extract_instruction = (
-            "From the findings, list each competitor analysed. Put the structural "
-            "read (what it governs and, crucially, what it does NOT govern) in "
-            "gap_note, with the competitor URL in url."
+            "From the findings, list each competitor analysed. Fill the 10-field "
+            "map (target_buyer, product_format/product_type, main_promise, "
+            "features_included, what_it_structurally_does, what_it_does_not_govern) "
+            "and the 6-dimension `teardown` (demand_validation, authorship_evidence, "
+            "build_readiness_gate, listing_readiness_gate, fee_stress_logic, "
+            "post_launch_decision_loop), each scored none/weak/present/strong/unknown. "
+            "Put the structural read (what it does NOT govern) in gap_note. Use the "
+            "real competitor URL in url. Distinguish products that STORE information "
+            "from products that FORCE a decision."
         )
         sources, findings = self._collect_sources(
             research_prompt, extract_instruction,
@@ -483,8 +520,13 @@ class Phase5Agent(BasePhaseAgent):
             f"Proposed missing mechanism (hypothesis): {hypothesis.missing_mechanism_hypothesis}\n\n"
             f"Competitor structures observed:\n{competitor_summary}\n\n"
             "Apply the test: if a competitor added better design, more pages, or "
-            "lower price, would this product still be structurally different? "
-            'Return JSON: {"is_structural": true|false, "gap_statement": "...", '
+            "lower price, would this product still be structurally different? A gap "
+            "that is only 'looks better / cleaner / cheaper / more pages / different "
+            "buyer label / more features' is NOT structural.\n"
+            'Return JSON: {"is_structural": true|false, '
+            '"current_competitor_pattern": "...", "missing_mechanism": "...", '
+            '"why_it_matters": "...", "proposed_mechanism": "...", '
+            '"gap_statement": "...", "what_would_make_gap_weak": "...", '
             '"reason": "..."}'
         )
         if recorder is not None:
@@ -494,22 +536,63 @@ class Phase5Agent(BasePhaseAgent):
             instruction=instruction,
             system=EXTRACT_SYSTEM,
         )
-        is_structural = _coerce_bool(data.get("is_structural")) if isinstance(data, dict) else None
-        gap_statement = (data.get("gap_statement") if isinstance(data, dict) else None) or ""
-        reason = (data.get("reason") if isinstance(data, dict) else None) or ""
+        data = data if isinstance(data, dict) else {}
+        is_structural = _coerce_bool(data.get("is_structural"))
+        gap_statement = _coerce_str(data.get("gap_statement")) or ""
+        reason = _coerce_str(data.get("reason")) or ""
 
-        passed = bool(is_structural) and len(gap_statement.strip()) > 0
-        findings = gap_statement.strip() or (
-            "Could not articulate a structural gap from the competitor analysis."
-        )
-        # Phase 5 references the competitor sources rather than collecting new ones.
-        return self._result(
+        # Competitor source IDs are linked later (orchestrator); here we record
+        # how many competitor structures were available to compare against.
+        competitor_count = len(phase4_result.sources_collected)
+        aesthetic = _is_aesthetic_only(gap_statement, data)
+
+        # A gap is supported only if it is structural, named, AND there are
+        # competitor structures to compare against (never from absence alone).
+        if aesthetic or not gap_statement:
+            status = "unsupported"
+        elif is_structural and competitor_count >= 1:
+            status = "supported"
+        elif gap_statement and competitor_count >= 1:
+            status = "partially_supported"
+        else:
+            status = "unsupported"
+
+        passed = status in ("supported", "partially_supported") and bool(is_structural) and not aesthetic
+        findings = gap_statement or "Could not articulate a structural gap from the competitor analysis."
+
+        mechanism_artifact = {
+            "current_competitor_pattern": _coerce_str(data.get("current_competitor_pattern")) or "",
+            "missing_mechanism": _coerce_str(data.get("missing_mechanism")) or "",
+            "why_it_matters": _coerce_str(data.get("why_it_matters")) or "",
+            "proposed_mechanism": (
+                _coerce_str(data.get("proposed_mechanism"))
+                or hypothesis.missing_mechanism_hypothesis
+            ),
+            "gap_statement": gap_statement,
+            "supporting_source_ids": [],  # linked by the orchestrator
+            "confidence": 0.7 if status == "supported" else (0.45 if status == "partially_supported" else 0.2),
+            "what_would_make_gap_weak": (
+                _coerce_str(data.get("what_would_make_gap_weak"))
+                or "If a competitor could close it with better design, more pages, or lower price."
+            ),
+            "status": status,
+            "is_structural": bool(is_structural) and not aesthetic,
+        }
+
+        result = self._result(
             PhaseStatus.PASS if passed else PhaseStatus.FAIL,
             phase4_result.sources_collected,
             findings,
-            reason.strip() or ("Structural gap identified." if passed else "Gap appears non-structural."),
-            "Specific, structural missing mechanism identified (not feature-based)",
+            reason or (
+                "Structural gap identified."
+                if passed
+                else ("Gap appears aesthetic/feature-only, not structural." if aesthetic
+                      else "Gap appears non-structural or unsupported.")
+            ),
+            "Specific, structural missing mechanism identified (not feature/aesthetic-based)",
         )
+        result.details = mechanism_artifact
+        return result
 
 
 # ---------------------------------------------------------------------- #
@@ -593,12 +676,90 @@ def _coerce_str(value: Any) -> Optional[str]:
     return text or None
 
 
+def _coerce_str_list(value: Any) -> Optional[list[str]]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [v.strip() for v in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        items = [str(v).strip() for v in value]
+    else:
+        return None
+    items = [v for v in items if v]
+    return items or None
+
+
+def _normalise_teardown(raw: Any) -> Optional[dict]:
+    """Normalise a 6-dimension competitor teardown to allowed score values."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, str] = {}
+    for dim in _TEARDOWN_DIMS:
+        val = str(raw.get(dim, "unknown") or "unknown").strip().lower()
+        out[dim] = val if val in _TEARDOWN_SCORES else "unknown"
+    return out
+
+
+def _extract_details(raw: dict) -> Optional[dict]:
+    """Pull phase-specific structured extras off a raw extracted source."""
+    keys = (
+        "currency", "product_type", "what_it_promises", "target_buyer",
+        "main_promise", "what_it_structurally_does", "what_it_does_not_govern",
+    )
+    details: dict[str, Any] = {}
+    for k in keys:
+        v = _coerce_str(raw.get(k))
+        if v is not None:
+            details[k] = v
+    features = _coerce_str_list(raw.get("features_included"))
+    if features:
+        details["features_included"] = features
+    teardown = _normalise_teardown(raw.get("teardown"))
+    if teardown:
+        details["teardown"] = teardown
+    return details or None
+
+
 def _summarise_price_bands(priced: list[SourceCard]) -> str:
     prices = sorted(p.price_observed for p in priced if p.price_observed is not None)
     if not prices:
         return ""
     low = ", ".join(f"${p:g}" for p in prices)
     return f"Observed prices: {low} (low ${prices[0]:g} / high ${prices[-1]:g})."
+
+
+# Price tiers from the workflow doc: low $0–$12, mid $15–$24.99, premium $29+.
+def _price_bands(priced: list[SourceCard]) -> dict:
+    bands: dict[str, list[float]] = {"low": [], "mid": [], "premium": []}
+    for s in priced:
+        p = s.price_observed
+        if p is None:
+            continue
+        if p <= 12:
+            bands["low"].append(p)
+        elif p < 29:
+            bands["mid"].append(p)
+        else:
+            bands["premium"].append(p)
+    return {tier: sorted(vals) for tier, vals in bands.items()}
+
+
+_AESTHETIC_MARKERS = (
+    "looks better", "look better", "cleaner", "nicer", "prettier", "cheaper",
+    "more pages", "more templates", "more features", "different buyer", "better design",
+    "better copy", "aesthetic", "easier on the eyes",
+)
+
+
+def _is_aesthetic_only(gap_statement: str, data: dict) -> bool:
+    """True if the stated gap is only aesthetic/feature/label-based (not structural)."""
+    text = " ".join(
+        str(data.get(k, "")) for k in ("gap_statement", "missing_mechanism", "reason")
+    ).lower()
+    text = f"{text} {gap_statement.lower()}"
+    if not text.strip():
+        return False
+    return any(marker in text for marker in _AESTHETIC_MARKERS)
 
 
 def _merge_unique(primary: list[SourceCard], extra: list[SourceCard]) -> list[SourceCard]:

@@ -40,11 +40,20 @@ ARTIFACT_FILES = [
     "rejected_sources.jsonl",
     "source_ledger.jsonl",
     "buyer_language_artifacts.jsonl",
+    "price_band_artifacts.jsonl",
+    "competitor_map.jsonl",
+    "missing_mechanism_gap.json",
     "claim_ledger.jsonl",
     "evidence_scorecard.json",
     "demand_brief.md",
     "demand_brief.json",
 ]
+
+# .json artifacts must always be valid JSON, even before they are populated.
+_EMPTY_JSON_ARTIFACTS = {
+    "run_manifest.json", "evidence_scorecard.json",
+    "missing_mechanism_gap.json", "demand_brief.json",
+}
 
 
 def _utc_now_iso() -> str:
@@ -94,9 +103,14 @@ class RunRecorder:
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
         # Pre-create every artifact file so an auditor always finds the full set,
-        # even if a particular log has zero records.
+        # even if a particular log has zero records. .json artifacts are seeded
+        # with valid JSON so they parse even before finalization.
         for name in ARTIFACT_FILES:
-            (self.run_dir / name).touch(exist_ok=True)
+            path = self.run_dir / name
+            if name in _EMPTY_JSON_ARTIFACTS:
+                path.write_text("{}", encoding="utf-8")
+            else:
+                path.touch(exist_ok=True)
 
         # Accumulators for the manifest / summaries.
         self.phase_prompts_sent: List[dict] = []
@@ -113,6 +127,9 @@ class RunRecorder:
         self._rejected_by_reason: Counter = Counter()
         self._rejected_examples: List[dict] = []
         self._buyer_artifacts: List[dict] = []
+        self._price_bands: List[dict] = []
+        self._competitors: List[dict] = []
+        self._missing_mechanism: dict = {}
         self._source_entries: List[dict] = []
         self._source_counter = 0
         self._artifact_counter = 0
@@ -256,6 +273,21 @@ class RunRecorder:
         self._artifact_counter += 1
         return f"BL{self._artifact_counter:03d}"
 
+    def log_price_band(self, record: dict) -> None:
+        """Append one structured Phase 3 price-band artifact."""
+        self._price_bands.append(record)
+        self._append_jsonl("price_band_artifacts.jsonl", record)
+
+    def log_competitor(self, record: dict) -> None:
+        """Append one structured Phase 4 competitor-map artifact."""
+        self._competitors.append(record)
+        self._append_jsonl("competitor_map.jsonl", record)
+
+    def write_missing_mechanism(self, record: dict) -> None:
+        """Write the single Phase 5 missing-mechanism gap artifact (valid JSON)."""
+        self._missing_mechanism = record
+        self._write_json("missing_mechanism_gap.json", record)
+
     # ------------------------------------------------------------------ #
     # Summaries for the bundle / markdown
     # ------------------------------------------------------------------ #
@@ -307,6 +339,9 @@ class RunRecorder:
         bundle["search_summary"] = self.search_summary()
         bundle["rejected_summary"] = self.rejected_summary()
         bundle["buyer_artifacts"] = self._buyer_artifacts
+        bundle["price_bands"] = self._price_bands
+        bundle["competitors"] = self._competitors
+        bundle["missing_mechanism"] = self._missing_mechanism
         bundle["claims"] = [c.model_dump(mode="json") for c in claim_entries]
         bundle["artifact_paths"] = {name: name for name in ARTIFACT_FILES}
         brief.audit = bundle

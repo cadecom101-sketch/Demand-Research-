@@ -22,6 +22,32 @@ class Decision(str, Enum):
     KILL = "KILL"
 
 
+class EvidenceStage(str, Enum):
+    """Where the idea sits on the E0 -> E1 -> post-E1 ladder.
+
+    The demand brief usually decides whether an idea earns the next cheapest
+    TEST (E1-candidate), not whether it should be fully built.
+    """
+    E0 = "E0"                      # unproven; stays E0 (KILL / PARK / REVISE)
+    E1_CANDIDATE = "E1_CANDIDATE"  # earns a cheap external test (TEST)
+    POST_E1 = "POST_E1"            # past validation; build-justified (BUILD)
+
+
+# Decision -> evidence stage. BUILD is deliberately the only POST_E1 mapping.
+DECISION_TO_STAGE = {
+    Decision.KILL: EvidenceStage.E0,
+    Decision.PARK: EvidenceStage.E0,
+    Decision.REVISE: EvidenceStage.E0,
+    Decision.TEST: EvidenceStage.E1_CANDIDATE,
+    Decision.BUILD: EvidenceStage.POST_E1,
+}
+
+
+def evidence_stage_for(decision: Decision) -> EvidenceStage:
+    """Map a final decision to its evidence stage."""
+    return DECISION_TO_STAGE.get(decision, EvidenceStage.E0)
+
+
 class ProductHypothesis(BaseModel):
     """Product idea input before research."""
     product_id: UUID = Field(default_factory=uuid4)
@@ -50,6 +76,13 @@ class SourceCard(BaseModel):
     screenshot_filename: Optional[str] = None
     gap_note: Optional[str] = None
     is_direct_quote: Optional[bool] = None
+    # Evidence classification (also written to source_ledger.jsonl). Populated
+    # at ledger time by the deterministic grader; carried here so a source card
+    # is self-describing.
+    evidence_type: Optional[str] = None
+    evidence_grade: Optional[str] = None
+    # Phase-specific structured extras (price band fields, competitor teardown).
+    details: Optional[dict] = None
 
 
 class PhaseResult(BaseModel):
@@ -61,6 +94,8 @@ class PhaseResult(BaseModel):
     findings: str
     reason: str
     pass_condition: str
+    # Phase-specific structured output (e.g. Phase 5 missing-mechanism gap).
+    details: Optional[dict] = None
 
 
 class DemandBrief(BaseModel):
@@ -74,6 +109,7 @@ class DemandBrief(BaseModel):
     decision: Decision
     decision_reasoning: str
     evidence_quality_score: float = Field(ge=0.0, le=1.0)
+    evidence_stage: EvidenceStage = EvidenceStage.E0
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

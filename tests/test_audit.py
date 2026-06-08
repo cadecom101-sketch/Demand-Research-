@@ -274,13 +274,16 @@ def test_hard_gate_overrides_explain_park(tmp_path):
     asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
     sc = json.loads((rec.run_dir / "evidence_scorecard.json").read_text())
     overrides = sc["hard_gate_overrides"]
-    # Every override that fired must cap at PARK (not REVISE) for this case.
+    # The buyer-language / grade / phase-2 gates must explain PARK (not REVISE).
     assert overrides, "PARK case must record explanatory gate overrides"
-    assert all("-> PARK" in o for o in overrides), overrides
-    assert any(o.startswith("buyer_language_missing") for o in overrides)
-    assert any(o.startswith("phase_2_failed") for o in overrides)
-    assert any(o.startswith("no_grade_a_or_b_evidence") for o in overrides)
-    assert not any("-> REVISE" in o for o in overrides)
+    assert "buyer_language_missing -> PARK" in overrides
+    assert "phase_2_failed -> PARK" in overrides
+    assert "no_grade_a_or_b_evidence -> PARK" in overrides
+    assert "grade_c_only_ceiling -> PARK" in overrides
+    # None of those four conservative gates may be mislabeled as REVISE.
+    for g in ("buyer_language_missing", "no_grade_a_or_b_evidence",
+              "grade_c_only_ceiling", "phase_2_failed"):
+        assert f"{g} -> REVISE" not in overrides
 
 
 def test_json_artifacts_parse_cleanly(tmp_path):

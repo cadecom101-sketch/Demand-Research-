@@ -24,6 +24,7 @@ from demand_research.models import (
     PhaseResult,
     PhaseStatus,
     ProductHypothesis,
+    evidence_stage_for,
 )
 from demand_research.research.claude_researcher import ClaudeResearcher, ResearchUnavailableError
 from demand_research.agents.phase_agents import (
@@ -126,7 +127,16 @@ class ResearchOrchestrator:
         all_sources = brief.all_sources()
 
         # Write the source ledger + buyer-language artifacts and get graded sources.
-        graded = self._build_graded_sources(brief, phase_results, recorder)
+        graded, phase_cards = self._build_graded_sources(brief, phase_results, recorder)
+
+        run_id = recorder.run_id if recorder is not None else "local"
+
+        # Structured phase artifacts (Patches 4/5/6): price bands, competitor
+        # map, missing-mechanism gap — derived from the graded sources so they
+        # link by source_id.
+        price_bands = self._build_price_bands(run_id, brief, phase_cards, recorder)
+        competitors = self._build_competitor_map(run_id, brief, phase_cards, recorder)
+        missing_mechanism = self._build_missing_mechanism(run_id, brief, phase_cards, recorder)
 
         signals = compute_signals(phase_by_num, run_status)
         outcome = self.decision_engine.decide(hypothesis, phase_results, all_sources, signals)
@@ -134,13 +144,14 @@ class ResearchOrchestrator:
         brief.decision = outcome.decision
         brief.decision_reasoning = outcome.reasoning
         brief.evidence_quality_score = outcome.score
+        brief.evidence_stage = evidence_stage_for(outcome.decision)
         brief.run_status = run_status
         brief.fatal_gaps = outcome.fatal_gaps
 
-        run_id = recorder.run_id if recorder is not None else "local"
         claims = build_claims(run_id, brief, graded, min_count=self.decision_engine.min_sources_per_phase)
 
         audit_core = {
+            "evidence_stage": brief.evidence_stage.value,
             "scorecard": {
                 "formula_version": FORMULA_VERSION,
                 "components": [c.model_dump(mode="json") for c in outcome.components],
@@ -170,12 +181,15 @@ class ResearchOrchestrator:
                                    "tool_error": 0, "rate_limited": 0},
                 "rejected_summary": {"total": 0, "by_reason": {}, "examples": []},
                 "buyer_artifacts": [],
+                "price_bands": price_bands,
+                "competitors": competitors,
+                "missing_mechanism": missing_mechanism,
                 "artifact_paths": {},
             }
 
         logger.info(
-            "Workflow complete. Decision: %s (quality: %.2f, status: %s)",
-            brief.decision.value, brief.evidence_quality_score, run_status,
+            "Workflow complete. Decision: %s -> stage %s (quality: %.2f, status: %s)",
+            brief.decision.value, brief.evidence_stage.value, brief.evidence_quality_score, run_status,
         )
         return brief
 
@@ -184,21 +198,28 @@ class ResearchOrchestrator:
         brief: DemandBrief,
         phase_results: List[PhaseResult],
         recorder: Optional[object],
-    ) -> List[dict]:
+    ) -> tuple[List[dict], dict]:
         """Grade every validated source, write the ledger + buyer-language
-        artifacts (when recording), and return the graded-source index used by
-        the claim ledger. Phase 5 is synthesis and reuses Phase 4's sources, so
-        it is not re-ledgered."""
+        artifacts (when recording), and return (graded_index, phase_cards).
+
+        `phase_cards` maps phase number -> [(source_id, SourceCard)] so the
+        structured phase artifacts can link by source_id. Phase 5 is synthesis
+        and reuses Phase 4's sources, so it is not re-ledgered."""
         graded: List[dict] = []
+        phase_cards: dict[int, list] = {}
         counter = 0
         for phase in phase_results:
             num = phase.phase_number
             if num == 5:
                 continue
             etype = PHASE_EVIDENCE_TYPE.get(num, "other")
+            phase_cards.setdefault(num, [])
             for card in phase.sources_collected:
                 counter += 1
                 grade, conf = grade_card(etype, card)
+                # Make the card self-describing too.
+                card.evidence_type = etype
+                card.evidence_grade = grade
                 if recorder is not None:
                     sid = recorder.next_source_id()
                     entry = SourceLedgerEntry(
@@ -227,13 +248,94 @@ class ResearchOrchestrator:
                         ))
                 else:
                     sid = f"S{counter:03d}"
+                phase_cards[num].append((sid, card))
                 graded.append({"source_id": sid, "phase": num, "grade": grade, "evidence_type": etype})
-        return graded
+        return graded, phase_cards
+
+    # ------------------------------------------------------------------ #
+    # Structured phase artifacts
+    # ------------------------------------------------------------------ #
+    def _build_price_bands(self, run_id, brief, phase_cards, recorder) -> List[dict]:
+        records: List[dict] = []
+        if brief.phase_3_result is None:
+            return records
+        for sid, card in phase_cards.get(3, []):
+            if card.price_observed is None:
+                continue
+            d = card.details or {}
+            record = {
+                "run_id": run_id, "source_id": sid,
+                "competitor_name": card.source_name, "url": str(card.url),
+                "date_observed": card.date_observed.isoformat(), "platform": card.platform,
+                "price_observed": card.price_observed,
+                "currency": d.get("currency", "USD"),
+                "product_type": d.get("product_type", card.platform),
+                "what_it_promises": d.get("what_it_promises", card.what_this_proves),
+                "features_included": card.competitor_features_observed or d.get("features_included", []),
+                "screenshot_filename": card.screenshot_filename,
+                "price_tier": _tier_for(card.price_observed),
+            }
+            records.append(record)
+            if recorder is not None:
+                recorder.log_price_band(record)
+        return records
+
+    def _build_competitor_map(self, run_id, brief, phase_cards, recorder) -> List[dict]:
+        records: List[dict] = []
+        if brief.phase_4_result is None:
+            return records
+        dims = (
+            "demand_validation", "authorship_evidence", "build_readiness_gate",
+            "listing_readiness_gate", "fee_stress_logic", "post_launch_decision_loop",
+        )
+        for sid, card in phase_cards.get(4, []):
+            d = card.details or {}
+            teardown = d.get("teardown") or {}
+            record = {
+                "run_id": run_id, "source_id": sid,
+                "competitor_name": card.source_name, "url": str(card.url),
+                "date_observed": card.date_observed.isoformat(),
+                "price": card.price_observed,
+                "target_buyer": d.get("target_buyer", ""),
+                "product_format": d.get("product_type", card.platform),
+                "main_promise": d.get("main_promise", ""),
+                "features_included": card.competitor_features_observed or d.get("features_included", []),
+                "what_it_structurally_does": d.get("what_it_structurally_does", ""),
+                "what_it_does_not_appear_to_govern": d.get("what_it_does_not_govern", card.gap_note or ""),
+            }
+            for dim in dims:
+                record[f"{dim}_score"] = teardown.get(dim, "unknown")
+            records.append(record)
+            if recorder is not None:
+                recorder.log_competitor(record)
+        return records
+
+    def _build_missing_mechanism(self, run_id, brief, phase_cards, recorder) -> dict:
+        if brief.phase_5_result is None:
+            return {}
+        mech = dict(brief.phase_5_result.details or {})
+        mech["run_id"] = run_id
+        # Link to the competitor sources the gap was judged against.
+        mech["supporting_source_ids"] = [sid for sid, _ in phase_cards.get(4, [])]
+        mech.setdefault("status", "unsupported")
+        mech.setdefault("gap_statement", brief.phase_5_result.findings)
+        if recorder is not None:
+            recorder.write_missing_mechanism(mech)
+        return mech
 
 
 # ---------------------------------------------------------------------- #
 # Deterministic narrative helpers (no model calls; fully reproducible)
 # ---------------------------------------------------------------------- #
+def _tier_for(price: float) -> str:
+    """Low $0–$12 / Mid $15–$24.99 (here <$29) / Premium $29+ (workflow doc)."""
+    if price <= 12:
+        return "low"
+    if price < 29:
+        return "mid"
+    return "premium"
+
+
 def _next_experiment(decision: Decision, hypothesis: ProductHypothesis) -> str:
     if decision == Decision.BUILD:
         return ("Build a minimal version and list it on "

@@ -110,6 +110,15 @@ def compute_signals(phase_by_num: dict[int, PhaseResult], run_status: str) -> di
     phase2_present = p2 is not None
     phase2_failed = phase2_present and p2.status == PhaseStatus.FAIL
 
+    p3 = phase_by_num.get(3)
+    p4 = phase_by_num.get(4)
+    p5 = phase_by_num.get(5)
+    phase1_pass = phase_by_num.get(1) is not None and phase_by_num[1].status == PhaseStatus.PASS
+    priced_count = len([s for s in p3.sources_collected if s.price_observed is not None]) if p3 else 0
+    competitor_count = len(p4.sources_collected) if p4 else 0
+    phase5_status = (p5.details or {}).get("status") if (p5 and p5.details) else None
+    phase5_pass = p5 is not None and p5.status == PhaseStatus.PASS
+
     return {
         "category_signal_count": category_signal_count,
         "buyer_language_artifact_count": buyer_language_artifact_count,
@@ -118,6 +127,12 @@ def compute_signals(phase_by_num: dict[int, PhaseResult], run_status: str) -> di
         "run_status": run_status,
         "phase2_present": phase2_present,
         "phase2_failed": phase2_failed,
+        "phase1_pass": phase1_pass,
+        "phase3_priced_count": priced_count,
+        "phase4_competitor_count": competitor_count,
+        "phase5_status": phase5_status,
+        "phase5_pass": phase5_pass,
+        "all_phases_present": all(phase_by_num.get(i) is not None for i in (1, 2, 3, 4, 5)),
     }
 
 
