@@ -105,7 +105,7 @@ the same grade, and the brief and its source ledger can never disagree.
 - **TEST** — Enough evidence to justify a cheap external test (fake-door /
   pre-order), but not enough to build the full product.
 - **BUILD** — Only after strong evidence or a successful behavioral/fake-door
-  validation.
+  validation. _(disabled in e1-demand-brief mode)_
 
 ---
 

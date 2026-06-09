@@ -36,7 +36,7 @@ If Phase 2 fails, PARK.
 
 - **E0** — an unproven idea; interesting, but has not earned build time.
 - **E1-candidate** — enough evidence to justify the next cheapest external test.
-- **POST-E1** — past validation; build-justified.
+- **POST-E1** — past validation; build-justified. _(disabled in e1-demand-brief mode)_
 
 Internal score tier → E1 review verdict (BUILD is disabled, capped to TEST):
 
@@ -131,7 +131,7 @@ KILL   — no market signal, no buyer pain, re-skin, or no nameable mechanism.
 PARK   — may be useful later; evidence missing now (default when Phase 2 fails).
 REVISE — evidence exists but buyer/channel/mechanism/price needs work.
 TEST   — enough evidence for cheap external validation; E1-candidate.
-BUILD  — only after strong/behavioral validation; post-E1.
+BUILD  — only after strong/behavioral validation; post-E1. (disabled in e1-demand-brief mode)
 ```
 
 ## 11. Phase pass requirements
