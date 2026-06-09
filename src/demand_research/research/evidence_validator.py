@@ -152,6 +152,50 @@ class EvidenceValidator:
 
         return issues
 
+    # Positive-satisfaction phrases. A glowing review proves *satisfaction*, not
+    # the target *pain* a buyer-language gate needs. These are matched only to
+    # filter Phase 2 candidates more strictly — they never relax any gate.
+    GENERIC_SATISFACTION_MARKERS = (
+        "love it", "love this", "i love", "great product", "great purchase",
+        "highly recommend", "works perfectly", "works great", "best purchase",
+        "exactly what i needed", "exactly what i wanted", "worth every penny",
+        "five stars", "5 stars", "so happy with", "amazing product", "perfect for",
+        "thank you so much", "easy to use", "no complaints", "couldn't be happier",
+        "would buy again", "absolutely love",
+    )
+
+    # Pain / unmet-need signals: even inside a positive review, these indicate a
+    # real articulated problem and must NOT be filtered out as mere satisfaction.
+    PAIN_SIGNAL_MARKERS = (
+        "wish", "frustrat", "struggl", "hate", "annoying", "wasted", "waste of",
+        "no sales", "not selling", "can't", "cant ", "couldn't figure", "too hard",
+        "difficult", "confus", "overwhelm", "spent hours", "gave up", "doesn't",
+        "does not", "missing", "lacks", "problem", "pain", "tired of", "sick of",
+        "how do i", "how do you", "what do you use", "don't know what",
+    )
+
+    def proves_target_pain(self, quote: str) -> bool:
+        """True if the quote articulates an unmet need / pain (not just praise)."""
+        low = (quote or "").lower()
+        return any(marker in low for marker in self.PAIN_SIGNAL_MARKERS)
+
+    def is_generic_satisfaction_quote(self, quote: str) -> bool:
+        """True if the quote is generic satisfaction/praise with no articulated pain.
+
+        A satisfied-customer quote ("love it, works perfectly") proves the
+        category sells, but it does NOT prove the target buyer pain a Phase 2
+        buyer-language artifact must demonstrate. Such quotes are rejected to the
+        durable rejected-source log rather than counted as pain evidence. This is
+        a stricter filter; it can only reduce accepted buyer language, never
+        weaken any gate.
+        """
+        low = (quote or "").strip().lower()
+        if not low:
+            return False
+        if self.proves_target_pain(low):
+            return False  # an articulated pain/unmet need — keep it
+        return any(marker in low for marker in self.GENERIC_SATISFACTION_MARKERS)
+
     def validate_batch(self, sources: list[SourceCard]) -> tuple[list[SourceCard], list[tuple[SourceCard, list[str]]]]:
         """
         Validate a batch of sources.

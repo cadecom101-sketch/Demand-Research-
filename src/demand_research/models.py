@@ -114,6 +114,9 @@ class ProductHypothesis(BaseModel):
     buyer_job: str
     product_format: str
     primary_channel: str
+    # Optional second channel used only to diversify search queries. Defaults to
+    # None so existing hypotheses need no edits; it never changes any gate.
+    secondary_channel: Optional[str] = None
     missing_mechanism_hypothesis: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

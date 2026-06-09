@@ -20,6 +20,7 @@ from demand_research.models import (
 )
 from demand_research.research.claude_researcher import ClaudeResearcher
 from demand_research.research.evidence_validator import EvidenceValidator
+from demand_research.research.query_planner import prompt_appendix
 from demand_research.research.source_collector import SourceCollector
 
 logger = logging.getLogger(__name__)
@@ -118,15 +119,23 @@ class BasePhaseAgent:
         default_platform: str,
         search_phrase: Optional[str] = None,
         recorder: Optional[Any] = None,
+        hypothesis: Optional[ProductHypothesis] = None,
     ) -> tuple[list[SourceCard], str]:
         """Run web research -> structured extraction -> validation.
 
         Every search attempt, the exact phase prompt, and every rejected source
         are streamed to the run recorder (when present) so the run is auditable.
+        When a `hypothesis` is supplied, diversified query families (the query
+        planner) are appended to the research prompt so the search casts a wider,
+        smarter net — this changes no gate or threshold, only search quality.
 
         Returns (validated_sources, findings_summary).
         """
         phase_id = f"phase_{self.phase_number}"
+        if hypothesis is not None:
+            appendix = prompt_appendix(hypothesis, self.phase_number)
+            if appendix:
+                research_prompt = f"{research_prompt}\n{appendix}"
         if recorder is not None:
             recorder.log_phase_prompt(phase_id, self.phase_name, research_prompt)
 
@@ -297,6 +306,7 @@ class Phase1Agent(BasePhaseAgent):
             default_platform=hypothesis.primary_channel,
             search_phrase=hypothesis.product_name,
             recorder=recorder,
+            hypothesis=hypothesis,
         )
         passed = len(sources) >= self.min_sources
         return self._result(
@@ -362,7 +372,8 @@ class Phase2Agent(BasePhaseAgent):
             "when it is verbatim; use false for paraphrase/composite."
         )
         sources, findings = self._collect_sources(
-            research_prompt, extract_instruction, default_platform="Reddit", recorder=recorder
+            research_prompt, extract_instruction, default_platform="Reddit",
+            recorder=recorder, hypothesis=hypothesis,
         )
         # Hard gate: Phase 2 ACCEPTS only genuine, verbatim buyer-language
         # artifacts (Grade B). Any other candidate that survived URL validation
@@ -373,6 +384,25 @@ class Phase2Agent(BasePhaseAgent):
         considered = len(sources)
         for card in sources:
             if card.is_direct_quote and card.buyer_language_captured:
+                # Stricter classification: a glowing/generic-satisfaction quote
+                # proves the category sells, NOT the target buyer pain a Phase 2
+                # artifact must demonstrate. Reject it durably rather than count
+                # it as pain. (This can only reduce accepted buyer language.)
+                if self.validator.is_generic_satisfaction_quote(card.buyer_language_captured):
+                    if recorder is not None:
+                        recorder.log_rejected(
+                            f"phase_{self.phase_number}", self.phase_name,
+                            {
+                                "url": str(card.url),
+                                "source_name": card.source_name,
+                                "platform": card.platform,
+                                "what_it_proves": card.what_this_proves,
+                                "buyer_language": card.buyer_language_captured or "",
+                            },
+                            reason="generic_satisfaction_not_pain",
+                            validator_rule="phase2_pain_requirement",
+                        )
+                    continue
                 artifacts.append(card)
             elif recorder is not None:
                 reason, rule = _phase2_rejection(card)
@@ -435,6 +465,7 @@ class Phase3Agent(BasePhaseAgent):
         sources, findings = self._collect_sources(
             research_prompt, extract_instruction,
             default_platform=hypothesis.primary_channel, recorder=recorder,
+            hypothesis=hypothesis,
         )
         # Only verified competitor prices count. Competitor leads (no price /
         # "not captured") and general market-pricing articles do NOT satisfy
@@ -522,6 +553,7 @@ class Phase4Agent(BasePhaseAgent):
         sources, findings = self._collect_sources(
             research_prompt, extract_instruction,
             default_platform=hypothesis.primary_channel, recorder=recorder,
+            hypothesis=hypothesis,
         )
         # Fall back to Phase 3 competitors if fresh structural search was thin.
         if len(sources) < self.min_sources and phase3_result.sources_collected:

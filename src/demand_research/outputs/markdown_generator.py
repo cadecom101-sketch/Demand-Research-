@@ -77,6 +77,8 @@ class _Renderer:
         L += self._section("What This Proves", self.audit.get("what_proves", "Not assessed."))
         L += self._section("What This Does NOT Prove", self.audit.get("what_not_proves", "Not assessed."))
         L += self._section("What Would Change This Verdict", self.audit.get("what_would_change", "Not assessed."))
+        L += self._decision_diagnostics()
+        L += self._next_evidence_plan()
         L += self._revenue_payload()
         L += self._section("Next Recommended Step", self.audit.get("next_experiment", "Not assessed."))
         L += self._all_sources()
@@ -284,6 +286,60 @@ class _Renderer:
         L.append("_Recording these rows into Revenue OS is the separate, external act that "
                  "satisfies B2. This repo does not perform it._")
         L.append("")
+        return L
+
+    def _decision_diagnostics(self) -> list[str]:
+        diag = self.audit.get("decision_diagnostics") or {}
+        if not diag:
+            return []
+        L = ["## Decision Diagnostics", ""]
+        L.append(f"- **Failure mode:** `{diag.get('failure_mode', 'n/a')}` — "
+                 f"{diag.get('failure_mode_note', '')}")
+        failing = diag.get("failing_e1_gates", [])
+        if failing:
+            L.append(f"- **Failing E1 gates (priority order):** "
+                     + ", ".join(f"`{g}`" for g in failing))
+        if diag.get("why_generic_not_enough"):
+            L.append(f"- **Why generic evidence is not enough:** {diag['why_generic_not_enough']}")
+        rej = diag.get("rejected_evidence", {}) or {}
+        if rej.get("total"):
+            by_reason = ", ".join(f"{k}={v}" for k, v in (rej.get("by_reason") or {}).items())
+            L.append(f"- **Rejected evidence:** {rej.get('total')} ({by_reason})")
+        L.append("")
+        L.append("| Phase | Status | Accepted | Supports E1 gate(s) |")
+        L.append("| ----- | ------ | -------- | ------------------- |")
+        for p in diag.get("phases", []):
+            L.append(
+                f"| {p.get('phase')} {p.get('name','')} | {p.get('status','')} | "
+                f"{p.get('accepted_source_count', 0)} | "
+                f"{', '.join(p.get('supports_e1_gates', [])) or '—'} |"
+            )
+        L.append("")
+        return L
+
+    def _next_evidence_plan(self) -> list[str]:
+        plan = self.audit.get("next_evidence_plan") or {}
+        if not plan.get("applies"):
+            return []
+        L = ["## Next Evidence Plan", ""]
+        if plan.get("primary_blocker"):
+            L.append(f"**Primary blocker (fix first):** `{plan['primary_blocker']}`")
+        failed = plan.get("failed_gates_in_priority_order", [])
+        if failed:
+            L.append("**Failed gates (priority order):** " + ", ".join(f"`{g}`" for g in failed))
+        L.append("")
+        for block in plan.get("targeted_search_plan", []):
+            L.append(f"### Gate `{block['for_failed_gate']}` → {block['phase_name']}")
+            sts = block.get("would_satisfy_source_types", [])
+            if sts:
+                L.append(f"_Would satisfy:_ {', '.join(sts)}")
+            if block.get("would_not_count"):
+                L.append(f"_Would NOT count:_ {block['would_not_count']}")
+            for fam in block.get("search_families", []):
+                L.append(f"- **{fam['name']}** — {fam['intent']}")
+                for q in fam.get("queries", [])[:5]:
+                    L.append(f"    - `{q}`")
+            L.append("")
         return L
 
     def _incomplete(self, phase_present: bool) -> Optional[str]:

@@ -32,6 +32,12 @@ from demand_research.models import (
     PhaseStatus,
     ProductHypothesis,
 )
+from demand_research.next_evidence import (
+    build_decision_diagnostics,
+    build_next_evidence_plan,
+    render_next_evidence_markdown,
+)
+from demand_research.research.query_planner import build_search_plan
 from demand_research.research.claude_researcher import ClaudeResearcher, ResearchUnavailableError
 from demand_research.agents.phase_agents import (
     Phase1Agent,
@@ -228,6 +234,26 @@ class ResearchOrchestrator:
                 f"(0 verified competitor prices captured; {price_lead_count} unpriced leads)."
             )
 
+        # Decision diagnostics + next-evidence plan (additive; explain/guide
+        # only — they never change a gate, threshold, or verdict). The search
+        # plan is the diversified evidence-seeking plan from the query planner.
+        e1_artifact = e1.to_artifact(run_id)
+        rejected_summary = (
+            recorder.rejected_summary() if recorder is not None
+            else {"total": 0, "by_reason": {}, "examples": []}
+        )
+        extraction_errors = recorder.extraction_error_count if recorder is not None else 0
+        search_plan = build_search_plan(hypothesis)
+        diagnostics = build_decision_diagnostics(
+            brief=brief, e1_artifact=e1_artifact, signals=signals,
+            phase_results=phase_results, rejected_summary=rejected_summary,
+            run_status=run_status, extraction_error_count=extraction_errors,
+        )
+        next_plan = build_next_evidence_plan(
+            hypothesis=hypothesis, brief=brief, e1_artifact=e1_artifact, signals=signals,
+        )
+        next_plan_md = render_next_evidence_markdown(next_plan)
+
         audit_core = {
             "evidence_stage": brief.evidence_stage.value,
             "scorecard": {
@@ -247,14 +273,21 @@ class ResearchOrchestrator:
             "price_leads": price_lead_count,
             "directional": directional,
             # E1 review surface (read by the markdown renderer + manifest).
-            "e1_review": e1.to_artifact(run_id),
+            "e1_review": e1_artifact,
             "revenue_os_payload_draft": e1.revenue_os_payload_draft,
             "primitive_name": e1.primitive_name,
             "target_member": e1.target_member,
             "excluded_members": e1.excluded_members,
+            # Decision-making intelligence (diagnostics + planning).
+            "search_plan": search_plan,
+            "decision_diagnostics": diagnostics,
+            "next_evidence_plan": next_plan,
         }
 
         if recorder is not None:
+            recorder.write_search_plan(search_plan)
+            recorder.write_decision_diagnostics(diagnostics)
+            recorder.write_next_evidence_plan(next_plan, next_plan_md)
             # Write the E1 gates artifact (pass AND fail runs) before finalize so
             # the manifest can summarise the review state.
             recorder.write_e1_review_gates(e1.to_artifact(run_id))

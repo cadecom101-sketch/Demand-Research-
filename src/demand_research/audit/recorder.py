@@ -47,6 +47,10 @@ ARTIFACT_FILES = [
     "evidence_scorecard.json",
     "e1_review_gates.json",
     "extraction_errors.jsonl",
+    "search_plan.json",
+    "decision_diagnostics.json",
+    "next_evidence_plan.json",
+    "next_evidence_plan.md",
     "demand_brief.md",
     "demand_brief.json",
 ]
@@ -55,6 +59,7 @@ ARTIFACT_FILES = [
 _EMPTY_JSON_ARTIFACTS = {
     "run_manifest.json", "evidence_scorecard.json",
     "missing_mechanism_gap.json", "e1_review_gates.json", "demand_brief.json",
+    "search_plan.json", "decision_diagnostics.json", "next_evidence_plan.json",
 }
 
 
@@ -121,6 +126,7 @@ class RunRecorder:
         self.validated_source_count = 0
         self.rejected_source_count = 0
         self.buyer_language_artifact_count = 0
+        self._extraction_error_count = 0
         self.run_status = "success"
 
         self._search_counts: Counter = Counter()
@@ -296,6 +302,24 @@ class RunRecorder:
         self._e1_review_gates = record
         self._write_json("e1_review_gates.json", record)
 
+    def write_search_plan(self, plan: dict) -> None:
+        """Write the diversified evidence-seeking search plan (valid JSON)."""
+        self._write_json("search_plan.json", plan)
+
+    def write_decision_diagnostics(self, diagnostics: dict) -> None:
+        """Write the decision diagnostics (why the verdict was reached)."""
+        self._write_json("decision_diagnostics.json", diagnostics)
+
+    def write_next_evidence_plan(self, plan: dict, markdown: str) -> None:
+        """Write the next-evidence plan (JSON always; markdown when applicable)."""
+        self._write_json("next_evidence_plan.json", plan)
+        self._write_text("next_evidence_plan.md", markdown or "")
+
+    @property
+    def extraction_error_count(self) -> int:
+        """Number of extraction parse failures logged this run."""
+        return self._extraction_error_count
+
     # ------------------------------------------------------------------ #
     # Raw research / extraction capture (debug audit trail)
     # ------------------------------------------------------------------ #
@@ -343,6 +367,7 @@ class RunRecorder:
         """
         if self.run_status == "success":
             self.run_status = "partial"
+        self._extraction_error_count += 1
         record = {
             "timestamp_utc": _utc_now_iso(),
             "phase": f"phase_{phase_number}",
