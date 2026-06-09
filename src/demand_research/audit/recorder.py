@@ -46,6 +46,7 @@ ARTIFACT_FILES = [
     "claim_ledger.jsonl",
     "evidence_scorecard.json",
     "e1_review_gates.json",
+    "extraction_errors.jsonl",
     "demand_brief.md",
     "demand_brief.json",
 ]
@@ -294,6 +295,67 @@ class RunRecorder:
         """Write the E1 review gates artifact (valid JSON; pass AND fail runs)."""
         self._e1_review_gates = record
         self._write_json("e1_review_gates.json", record)
+
+    # ------------------------------------------------------------------ #
+    # Raw research / extraction capture (debug audit trail)
+    # ------------------------------------------------------------------ #
+    def write_raw_research(
+        self,
+        phase_number: int,
+        text: str,
+        citations: Optional[List[str]] = None,
+        search_attempts: Optional[List[dict]] = None,
+    ) -> None:
+        """Persist the EXACT web-research text for a phase, unmodified.
+
+        The `.txt` file holds the raw model research output verbatim (not
+        summarised, cleaned, or trimmed). Citation/search metadata goes into a
+        sidecar JSON file so the raw text stays byte-for-byte faithful.
+        """
+        self._write_text(f"raw_research_findings_phase_{phase_number}.txt", text or "")
+        sidecar = {
+            "run_id": self.run_id,
+            "phase": f"phase_{phase_number}",
+            "captured_utc": _utc_now_iso(),
+            "citations": list(citations or []),
+            "search_attempts": list(search_attempts or []),
+        }
+        self._write_json(f"raw_research_findings_phase_{phase_number}.citations.json", sidecar)
+
+    def write_raw_extraction(self, phase_number: int, text: str) -> None:
+        """Persist the EXACT extraction model response for a phase, BEFORE JSON
+        parsing — written whether or not parsing later succeeds."""
+        self._write_text(f"raw_extraction_response_phase_{phase_number}.txt", text or "")
+
+    def log_extraction_error(
+        self,
+        phase_number: int,
+        error_type: str,
+        error_message: str,
+        parser_step: str,
+        raw_preview: str,
+    ) -> None:
+        """Append a failed extraction-parse attempt to extraction_errors.jsonl.
+
+        Records only what is needed to debug the parse failure — never API keys,
+        credentials, or system prompts. `raw_preview` is a short, truncated slice
+        of the (already non-secret) model extraction output.
+        """
+        if self.run_status == "success":
+            self.run_status = "partial"
+        record = {
+            "timestamp_utc": _utc_now_iso(),
+            "phase": f"phase_{phase_number}",
+            "error_type": error_type,
+            "error_message": error_message,
+            "parser_step_failed": parser_step,
+            "raw_preview": (raw_preview or "")[:300],
+        }
+        self._append_jsonl("extraction_errors.jsonl", record)
+        self.add_note(
+            f"phase_{phase_number} extraction parse failed ({parser_step}); "
+            "no sources accepted from that pass (fail-closed)."
+        )
 
     # ------------------------------------------------------------------ #
     # Summaries for the bundle / markdown

@@ -135,6 +135,12 @@ class BasePhaseAgent:
         # Log searches even when the pass returns no usable text.
         if recorder is not None:
             recorder.log_searches(phase_id, self.phase_name, result.search_attempts)
+            # Persist the EXACT research text (+ citation/search sidecar) BEFORE
+            # extraction, so a downstream parse failure is still debuggable.
+            recorder.write_raw_research(
+                self.phase_number, result.text,
+                citations=result.citations, search_attempts=result.search_attempts,
+            )
 
         if not result.text:
             return [], "Web research returned no usable findings."
@@ -146,12 +152,28 @@ class BasePhaseAgent:
             url_list = "\n".join(f"- {u}" for u in result.citations)
             findings_for_extraction = f"{result.text}\n\nSource URLs found:\n{url_list}"
 
-        data = self.researcher.extract(
+        extraction = self.researcher.extract(
             findings_for_extraction,
             f"{extract_instruction}\n\n{_SOURCE_JSON_SHAPE}",
             system=EXTRACT_SYSTEM,
         )
+        # Persist the EXACT extraction response BEFORE parsing is trusted, and
+        # record any parse failure to the extraction-error ledger. A failed
+        # parse yields no sources — never fabricated placeholders.
+        if recorder is not None:
+            recorder.write_raw_extraction(self.phase_number, extraction.raw_text)
+            if extraction.parse_error is not None:
+                recorder.log_extraction_error(
+                    self.phase_number,
+                    error_type=extraction.parse_error.get("error_type", "parse_error"),
+                    error_message=extraction.parse_error.get("error_message", ""),
+                    parser_step=extraction.parse_error.get("parser_step", ""),
+                    raw_preview=extraction.raw_text,
+                )
+        data = extraction.data if isinstance(extraction.data, dict) else {}
         raw_sources = data.get("sources", []) if isinstance(data, dict) else []
+        if not isinstance(raw_sources, list):
+            raw_sources = []
         if recorder is not None:
             recorder.bump_raw(len(raw_sources))
 
@@ -555,12 +577,26 @@ class Phase5Agent(BasePhaseAgent):
         )
         if recorder is not None:
             recorder.log_phase_prompt(f"phase_{self.phase_number}", self.phase_name, instruction)
-        data = self.researcher.extract(
+            # Phase 5 is synthesis (no web search): its "research" input is the
+            # competitor structures carried in from Phase 4. Capture that input
+            # as this phase's raw research record so the trail stays complete.
+            recorder.write_raw_research(self.phase_number, competitor_summary)
+        extraction = self.researcher.extract(
             findings=competitor_summary,
             instruction=instruction,
             system=EXTRACT_SYSTEM,
         )
-        data = data if isinstance(data, dict) else {}
+        if recorder is not None:
+            recorder.write_raw_extraction(self.phase_number, extraction.raw_text)
+            if extraction.parse_error is not None:
+                recorder.log_extraction_error(
+                    self.phase_number,
+                    error_type=extraction.parse_error.get("error_type", "parse_error"),
+                    error_message=extraction.parse_error.get("error_message", ""),
+                    parser_step=extraction.parse_error.get("parser_step", ""),
+                    raw_preview=extraction.raw_text,
+                )
+        data = extraction.data if isinstance(extraction.data, dict) else {}
         is_structural = _coerce_bool(data.get("is_structural"))
         gap_statement = _coerce_str(data.get("gap_statement")) or ""
         reason = _coerce_str(data.get("reason")) or ""
