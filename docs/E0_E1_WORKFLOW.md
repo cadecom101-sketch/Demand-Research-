@@ -99,15 +99,21 @@ Grade C cannot satisfy a Phase 2 buyer-language requirement.
 
 ## Decision definitions and evidence stages
 
-| Decision | Stage | Meaning |
-| -------- | ----- | ------- |
-| KILL | E0 | No market signal / no pain / re-skin / no nameable mechanism. Abandon unless hypothesis changes. |
-| PARK | E0 | May be useful later; required evidence missing now, or partial run. |
-| REVISE | E0 | Evidence exists but buyer/channel/mechanism/price needs work. |
-| TEST | E1_CANDIDATE | Enough evidence to justify a cheap external validation. |
-| BUILD | POST_E1 | Only after strong evidence or successful behavioral validation. |
+The conservative engine still scores each run internally
+(KILL/PARK/REVISE/TEST). **BUILD is disabled** in the E1 demand-brief workflow
+(capped to TEST). The internal score tier maps to the E1 review verdict:
 
-The demand brief usually decides whether an idea earns **TEST**, not BUILD.
+| Internal tier | E1 review verdict              | Evidence stage           |
+| ------------- | ------------------------------ | ------------------------ |
+| KILL          | E1_KILL (via no_fabrication)   | E0_AUTHORED_CAPTURED     |
+| PARK          | E1_PARK                        | E0_AUTHORED_CAPTURED     |
+| REVISE        | E1_REVISE_BEFORE_RECORDING     | E0_AUTHORED_CAPTURED     |
+| TEST          | E1_APPROVED_TO_RECORD          | E1_APPROVED_TO_RECORD    |
+| BUILD         | *disabled — capped to TEST*    | —                        |
+
+The headline verdict is produced by the nine E1 review gates (see
+`e1_review.py`). The repo can reach at most `E1_APPROVED_TO_RECORD`;
+`E1_RECORDED` and B2 acceptance happen externally in Revenue OS.
 
 ---
 
@@ -129,8 +135,14 @@ The demand brief usually decides whether an idea earns **TEST**, not BUILD.
 An idea may reach E1-candidate (TEST) only with: Phase 1 passed; ≥3 buyer-
 language artifacts (or explicit Grade-A behavioral); ≥3 observed prices; ≥3
 structured competitors; a supported/partially-supported missing mechanism; and
-no hard gate capping below TEST. Otherwise it stays E0. BUILD requires stronger
-evidence than E1-candidate (POST_E1).
+no hard gate capping below TEST. Otherwise it stays E0.
+
+`E1_APPROVED_TO_RECORD` requires *more* than this: all nine E1 review gates must
+pass (including ≥5 buyer-language phrases, verified observed prices, scope lock
+to the Base member, and fit to the authored primitive) **and** the conservative
+engine must have cleared its TEST bar. Recording into Revenue OS — which turns
+`E1_CANDIDATE / E1_APPROVED_TO_RECORD` into `E1_RECORDED` and satisfies B2 — is
+external to this repo.
 
 ---
 

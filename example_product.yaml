@@ -1,6 +1,13 @@
-product_name: "Governed Solo-Operator Launch OS"
-target_buyer: "Solo Etsy-first digital-product seller"
-buyer_job: "Decide which product ideas deserve build time, which listings need revision, and which products should be expanded, parked, or pruned"
-product_format: "Notion operating system"
+# E1 demand-brief hypothesis for the FIRST member under the primitive.
+#
+#   Primitive (parent):  Governed Solo-Operator Launch OS
+#   Member (validated):  Base — Retail Instant-Download OS
+#
+# Run with:  demand-research research --from-file example_product.yaml --target-member Base
+# (Member A / Member B are deferred at E0 and fail scope lock.)
+product_name: "Base — Retail Instant-Download OS"
+target_buyer: "Solo Etsy-first seller of instant-download digital products"
+buyer_job: "Move a product idea through demand proof, build scope, a quality gate, listing prep, a launch tracker, and a sales/feedback loop — and decide ADVANCE / REVISE / KILL / PARK / EXPAND"
+product_format: "Notion operating system (instant-download / retail digital products)"
 primary_channel: "Etsy-first"
-missing_mechanism_hypothesis: "Most seller templates track products after the fact, but they do not force a product idea through demand, authorship, quality, listing-readiness, and feedback gates before launch"
+missing_mechanism_hypothesis: "Existing seller templates track listings after the fact; Base forces a product idea through demand evidence, build scope, a quality gate, listing readiness, launch tracking, and a review loop BEFORE and after launch — gating every state transition instead of just storing notes"

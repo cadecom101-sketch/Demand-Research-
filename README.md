@@ -1,15 +1,32 @@
 # Autonomous Demand Brief Research Workflow
 
-**Demand Research is an E0 → E1-candidate evidence gate.** It helps decide
-whether a product idea earns the *next cheapest test* — not whether to build it
-today. You provide a one-line product hypothesis; the workflow autonomously runs
-five evidence-gated research phases and returns a
-**BUILD / TEST / REVISE / PARK / KILL** decision, mapped to an evidence stage
-(**E0 / E1_CANDIDATE / POST_E1**), backed by dated, sourced citations.
+**Demand Research produces a reviewable `E1_CANDIDATE` demand brief for
+`Base — Retail Instant-Download OS`, the first member under the
+`Governed Solo-Operator Launch OS` primitive.** It collects and audits
+documented desk evidence (niche, observed sources, buyer/search/listing
+language, observed price band, competitor presence, missing-mechanism gap), runs
+nine E1 review gates, and returns an **E1 review verdict** that a human can
+approve for recording into Revenue OS.
 
-It is **not** a vibe-based validation generator, and it is **not** optimized to
-produce BUILD decisions — it is optimized to *avoid false BUILD decisions*. The
-demand brief usually decides whether an idea earns a cheap **TEST**, not a build.
+```text
+Governed Solo-Operator Launch OS          (primitive — Andrew-authored)
+└── Base — Retail Instant-Download OS      (first member — validated here)
+    └── first E1 demand brief being created now
+```
+
+It is **not** a BUILD recommender. It is **not** a public test runner. It is
+**not** a POST_E1 validator. It does **not** record into Revenue OS, does
+**not** unlock B3, and does **not** validate Member A or Member B. Its job is to
+answer one question:
+
+> Does Base have enough documented desk evidence to become `E1_CANDIDATE` and
+> pass E1 review for recording into Revenue OS?
+
+The verdict is one of **`E1_APPROVED_TO_RECORD` / `E1_REVISE_BEFORE_RECORDING` /
+`E1_PARK` / `E1_KILL`**. The repo can reach at most **`E1_APPROVED_TO_RECORD`**;
+recording itself (`E1_RECORDED`) and B2 acceptance happen **outside this repo**
+in Revenue OS. BUILD is disabled — a five-phase desk-research run can never
+justify BUILD.
 
 The "eyes and hands" are the **Anthropic API's native web search tool** — Claude
 searches the real web (Etsy, Gumroad, Notion Marketplace, Reddit, forums),
@@ -44,12 +61,24 @@ ResearchOrchestrator ── runs phases in sequence, stops at first FAIL
         └─ Phase 5  Missing-Mechanism Gap  → is the gap structural, not cosmetic?
         │
         ▼
-DecisionEngine → BUILD / REVISE / PARK / KILL  + evidence-quality score
+DecisionEngine (internal score tier; BUILD disabled, capped to TEST)
+        │
+        ▼
+E1 Review (9 gates) → E1_APPROVED_TO_RECORD / E1_REVISE_BEFORE_RECORDING /
+                      E1_PARK / E1_KILL  + recording / B2 / B3 status
         │
         ├─ Markdown brief  → briefs/<id>-demand-brief.md   (git-tracked)
         ├─ JSON export     → data/briefs/<id>-brief.json
+        ├─ Run folder      → runs/<run_id>/ (truth layer, incl. e1_review_gates.json)
         └─ Notion page     → created when NOTION_API_KEY is set
 ```
+
+The nine E1 review gates are: `scope_lock`, `minimum_real_observed_evidence`,
+`demand_signal_exists`, `buyer_language_captured`, `observed_price_band`,
+`competitor_presence`, `specific_missing_mechanism_gap`,
+`fit_to_andrew_authored_primitive`, and `no_fabrication`. The price-band gate
+counts **verified observed prices only** — competitor leads without prices and
+directional pricing articles never satisfy it.
 
 Each phase does two real model calls:
 
@@ -69,12 +98,19 @@ how much real evidence survived.
 pip install -e .
 export ANTHROPIC_API_KEY=sk-ant-...      # required to run live research
 
-# From a YAML hypothesis file:
+# From a YAML hypothesis file (Base member, e1-demand-brief mode by default):
 demand-research research --from-file example_product.yaml
 
 # Or interactively (prompts for any field you don't pass as a flag):
 demand-research research
+
+# The workflow validates the Base member only. Member A/B fail scope lock:
+demand-research research --target-member Base   # default
 ```
+
+`--workflow-mode` defaults to `e1-demand-brief` and `--target-member` defaults
+to `Base`. Passing `--target-member A` or `B` fails fast with a scope-lock
+error: those members are deferred at E0 and are not validated by this repo.
 
 Outputs land in `briefs/` (markdown, committed alongside your repo) and
 `data/briefs/` (JSON). If `NOTION_API_KEY` and `NOTION_DATABASE_ID` are set, a
@@ -104,17 +140,25 @@ If credentials are missing, the CLI **refuses to emit a verdict** and tells you
 to set `ANTHROPIC_API_KEY` — it never turns an infrastructure failure into a
 fake KILL.
 
-## Decision rules
+## E1 review verdicts
 
-| Decision   | When                                                                 |
-| ---------- | -------------------------------------------------------------------- |
-| **BUILD**  | All 5 phases pass with strong evidence (quality ≥ 0.75)              |
-| **REVISE** | All phases pass but evidence is moderate (0.50–0.75)                 |
-| **PARK**   | Weak evidence overall, or Phase 2 fails (market unclear, revisit)   |
-| **KILL**   | Phase 1 fails — no real market signal at all                        |
+The headline output is a recording-readiness verdict from the nine E1 gates:
 
-Evidence quality blends source count, recency, and quote authenticity
-(see `decision_engine.py`).
+| Verdict                        | When                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------- |
+| **E1_APPROVED_TO_RECORD**      | All nine gates pass (and the conservative engine cleared its TEST bar)           |
+| **E1_REVISE_BEFORE_RECORDING** | Scope/fit/buyer-language/price/competitor/mechanism gate fails                   |
+| **E1_PARK**                    | Too few observed sources, or no external demand signal                          |
+| **E1_KILL**                    | Fabrication / evidence-integrity failure                                        |
+
+When the verdict is `E1_APPROVED_TO_RECORD`: `recording_status = READY_TO_RECORD`,
+`b2_acceptance_status = READY_FOR_ACCEPTANCE`, `b3_status = LOCKED`,
+`public_execution_status = NONE`. The repo never sets `E1_RECORDED`, never marks
+B2 accepted, and never unlocks B3 — those are external Revenue OS acts.
+
+Internally the conservative `DecisionEngine` still scores the run
+(KILL/PARK/REVISE/TEST), and **BUILD is disabled** (capped to TEST). The E1
+gates can only make approval *harder* than the engine's TEST bar, never easier.
 
 ## Project layout
 
@@ -174,19 +218,48 @@ the audit trail.** Every run writes `runs/{run_id}/`:
 
 ```
 runs/{run_id}/
-  run_manifest.json               # model, commit, prompts, counts, decision
+  run_manifest.json               # model, commit, prompts, counts, E1 review state
   search_log.jsonl                # every search attempt (incl. zero-result/errors)
   rejected_sources.jsonl          # every dropped source + reason + rule
   source_ledger.jsonl             # every validated source, graded A/B/C/D
   buyer_language_artifacts.jsonl  # verbatim quotes linked to source IDs
+  price_band_artifacts.jsonl      # VERIFIED observed competitor prices only
+  competitor_map.jsonl            # 10-field map + 6-dimension teardown
+  missing_mechanism_gap.json      # structural gap analysis
   claim_ledger.jsonl              # each claim + supporting source IDs + status
   evidence_scorecard.json         # the visible scoring formula + components
+  e1_review_gates.json            # nine E1 gates + verdict + recording/B2/B3 status
   demand_brief.md                 # human-readable summary
   demand_brief.json               # machine-readable brief
 ```
 
 The grading rules, phase requirements, hard gates, and scoring formula are
 specified in [`docs/EVIDENCE_RULES.md`](docs/EVIDENCE_RULES.md).
+
+## Scope and boundaries
+
+Demand Research currently produces an `E1_CANDIDATE` demand brief for
+`Base — Retail Instant-Download OS`, the first member under the
+`Governed Solo-Operator Launch OS` primitive. It collects and audits documented
+demand signal: niche/sub-niche, observed sources, buyer/search/listing language,
+observed price band, competitor presence, missing-mechanism gap, and a demand
+brief with cited observations.
+
+It is **not** a BUILD recommender, **not** a public test runner, and **not** a
+POST_E1 validator. **Revenue OS recording is the separate, external act that
+turns `E1_CANDIDATE / E1_APPROVED_TO_RECORD` into `E1_RECORDED` and satisfies B2
+acceptance.** This repo never performs it.
+
+Conservative behavior is preserved end-to-end:
+
+- No fabricated evidence, no fake buyer quotes, no guessed prices.
+- No generic scraping, no public execution (publishing/listing/ads/contact).
+- No B3 unlock; no Member A / Member B review.
+- The price-band integrity rule holds: competitor leads without prices and
+  directional pricing articles never satisfy the price band; only verified
+  observed prices land in `price_band_artifacts.jsonl`.
+- The run folder remains the truth layer; the markdown brief is only the
+  human-readable summary.
 
 ## Methodology
 

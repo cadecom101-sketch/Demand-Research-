@@ -13,6 +13,7 @@ from demand_research.models import (
     EvidenceStage,
     ProductHypothesis,
     PhaseStatus,
+    ReviewVerdict,
     evidence_stage_for,
 )
 from demand_research.agents.orchestrator import ResearchOrchestrator
@@ -44,17 +45,18 @@ def test_brief_has_evidence_stage(tmp_path):
     brief = asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
     assert isinstance(brief.evidence_stage, EvidenceStage)
     assert json.loads((rec.run_dir / "demand_brief.json").read_text())["evidence_stage"] in {
-        "E0", "E1_CANDIDATE", "POST_E1"
+        "E0_AUTHORED_CAPTURED", "E1_CANDIDATE", "E1_APPROVED_TO_RECORD", "E1_RECORDED"
     }
 
 
-# 3 — decision -> stage mapping
-def test_decision_to_stage_mapping():
-    assert evidence_stage_for(Decision.KILL) == EvidenceStage.E0
-    assert evidence_stage_for(Decision.PARK) == EvidenceStage.E0
-    assert evidence_stage_for(Decision.REVISE) == EvidenceStage.E0
-    assert evidence_stage_for(Decision.TEST) == EvidenceStage.E1_CANDIDATE
-    assert evidence_stage_for(Decision.BUILD) == EvidenceStage.POST_E1
+# 3 — review verdict -> evidence stage mapping (only approval advances the ladder)
+def test_verdict_to_stage_mapping():
+    assert evidence_stage_for(ReviewVerdict.E1_KILL) == EvidenceStage.E0_AUTHORED_CAPTURED
+    assert evidence_stage_for(ReviewVerdict.E1_PARK) == EvidenceStage.E0_AUTHORED_CAPTURED
+    assert evidence_stage_for(
+        ReviewVerdict.E1_REVISE_BEFORE_RECORDING) == EvidenceStage.E0_AUTHORED_CAPTURED
+    assert evidence_stage_for(
+        ReviewVerdict.E1_APPROVED_TO_RECORD) == EvidenceStage.E1_APPROVED_TO_RECORD
 
 
 # 4/5/6 — structured phase artifacts are created
@@ -77,7 +79,10 @@ def test_markdown_has_workflow_sections(tmp_path):
     orch = ResearchOrchestrator(researcher=t._researcher(t._strong_sources(), t._GAP))
     asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
     md = (rec.run_dir / "demand_brief.md").read_text()
-    assert "## Evidence Stage" in md
+    assert "## Primitive / Member Hierarchy" in md
+    assert "## Current State / Candidate State" in md
+    assert "## E1 Review Verdict" in md
+    assert "## E1 Review Gate Results" in md
     assert "## Price Band Mapping" in md
     assert "## Competitor Presence Map" in md
     assert "## Missing-Mechanism Gap" in md
@@ -88,7 +93,7 @@ def test_e1_candidate_impossible_without_buyer_language(tmp_path):
     rec = RunRecorder(t._hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=t._researcher(t._grade_c_run(), t._GAP))
     brief = asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
-    assert brief.evidence_stage == EvidenceStage.E0
+    assert brief.evidence_stage == EvidenceStage.E0_AUTHORED_CAPTURED
     assert brief.decision not in (Decision.TEST, Decision.BUILD)
 
 
@@ -137,6 +142,7 @@ def test_json_artifacts_parse_cleanly(tmp_path):
     orch = ResearchOrchestrator(researcher=t._researcher(t._strong_sources(), t._GAP))
     asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
     for name in ("run_manifest.json", "evidence_scorecard.json",
-                 "demand_brief.json", "missing_mechanism_gap.json"):
+                 "demand_brief.json", "missing_mechanism_gap.json",
+                 "e1_review_gates.json"):
         with (rec.run_dir / name).open() as f:
             assert isinstance(json.load(f), dict)

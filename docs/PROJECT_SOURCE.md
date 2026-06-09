@@ -38,17 +38,19 @@ If Phase 2 fails, PARK.
 - **E1-candidate** — enough evidence to justify the next cheapest external test.
 - **POST-E1** — past validation; build-justified.
 
-Decision → stage mapping:
+Internal score tier → E1 review verdict (BUILD is disabled, capped to TEST):
 
 ```
-KILL   -> E0           (abandon unless hypothesis changes)
-PARK   -> E0           (revisit later with better evidence)
-REVISE -> E0           (modify buyer/channel/mechanism/positioning)
-TEST   -> E1_CANDIDATE (run cheap external validation)
-BUILD  -> POST_E1      (only after strong/behavioral validation)
+KILL   -> E1_KILL                     -> E0_AUTHORED_CAPTURED
+PARK   -> E1_PARK                     -> E0_AUTHORED_CAPTURED
+REVISE -> E1_REVISE_BEFORE_RECORDING  -> E0_AUTHORED_CAPTURED
+TEST   -> E1_APPROVED_TO_RECORD       -> E1_APPROVED_TO_RECORD
+BUILD  -> disabled (capped to TEST)
 ```
 
-The brief should usually decide whether the idea earns TEST, not BUILD.
+The repo produces a reviewable `E1_CANDIDATE` brief for the Base member and can
+recommend `E1_APPROVED_TO_RECORD`. Recording into Revenue OS (`E1_RECORDED`) and
+B2 acceptance are external acts this repo never performs.
 
 ## 4. Product hypothesis input
 

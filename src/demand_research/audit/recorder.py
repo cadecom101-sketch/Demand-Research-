@@ -45,6 +45,7 @@ ARTIFACT_FILES = [
     "missing_mechanism_gap.json",
     "claim_ledger.jsonl",
     "evidence_scorecard.json",
+    "e1_review_gates.json",
     "demand_brief.md",
     "demand_brief.json",
 ]
@@ -52,7 +53,7 @@ ARTIFACT_FILES = [
 # .json artifacts must always be valid JSON, even before they are populated.
 _EMPTY_JSON_ARTIFACTS = {
     "run_manifest.json", "evidence_scorecard.json",
-    "missing_mechanism_gap.json", "demand_brief.json",
+    "missing_mechanism_gap.json", "e1_review_gates.json", "demand_brief.json",
 }
 
 
@@ -130,6 +131,7 @@ class RunRecorder:
         self._price_bands: List[dict] = []
         self._competitors: List[dict] = []
         self._missing_mechanism: dict = {}
+        self._e1_review_gates: dict = {}
         self._source_entries: List[dict] = []
         self._source_counter = 0
         self._artifact_counter = 0
@@ -288,6 +290,11 @@ class RunRecorder:
         self._missing_mechanism = record
         self._write_json("missing_mechanism_gap.json", record)
 
+    def write_e1_review_gates(self, record: dict) -> None:
+        """Write the E1 review gates artifact (valid JSON; pass AND fail runs)."""
+        self._e1_review_gates = record
+        self._write_json("e1_review_gates.json", record)
+
     # ------------------------------------------------------------------ #
     # Summaries for the bundle / markdown
     # ------------------------------------------------------------------ #
@@ -342,6 +349,7 @@ class RunRecorder:
         bundle["price_bands"] = self._price_bands
         bundle["competitors"] = self._competitors
         bundle["missing_mechanism"] = self._missing_mechanism
+        bundle["e1_review_gates"] = self._e1_review_gates
         bundle["claims"] = [c.model_dump(mode="json") for c in claim_entries]
         bundle["artifact_paths"] = {name: name for name in ARTIFACT_FILES}
         brief.audit = bundle
@@ -353,7 +361,8 @@ class RunRecorder:
         self._write_text("demand_brief.md", markdown_text)
         self._write_json("demand_brief.json", brief.model_dump(mode="json"))
 
-        # Manifest last — it summarises everything above.
+        # Manifest last — it summarises everything above (incl. E1 review state).
+        e1 = self._e1_review_gates or {}
         manifest = RunManifest(
             run_id=self.run_id,
             product_slug=self.product_slug,
@@ -382,6 +391,17 @@ class RunRecorder:
             evidence_quality_score=brief.evidence_quality_score,
             fatal_gaps=audit_core.get("fatal_gaps", []),
             notes=self.notes,
+            primitive_name=e1.get("primitive_name", ""),
+            target_member=e1.get("target_member", ""),
+            excluded_members=e1.get("excluded_members", []),
+            current_state=e1.get("current_state", ""),
+            candidate_state=e1.get("candidate_state", ""),
+            review_verdict=e1.get("review_verdict", ""),
+            recording_status=e1.get("recording_status", ""),
+            b2_acceptance_status=e1.get("b2_acceptance_status", ""),
+            b3_status=e1.get("b3_status", ""),
+            public_execution_status=e1.get("public_execution_status", ""),
+            e1_review_gates_path="e1_review_gates.json" if self._e1_review_gates else "",
         )
         if _repo_commit_hash() is None:
             self.add_note("repo_commit_hash unavailable (git not present); reproducibility reduced.")

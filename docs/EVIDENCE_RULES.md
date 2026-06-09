@@ -15,14 +15,43 @@ agents implements exactly what is written here.
 ## 1. Purpose
 
 The system exists to **prevent premature product building**. It takes a product
-hypothesis and tries — using real web evidence only — to decide whether the idea
-deserves build time. A clean "no evidence found" is a valid and valuable result,
-not a failure to paper over. The verdict is one of:
+hypothesis for the Base member (`Base — Retail Instant-Download OS`, the first
+member under the `Governed Solo-Operator Launch OS` primitive) and — using
+documented desk evidence only — produces a reviewable E1 demand brief. A clean
+"no evidence found" is a valid and valuable result, not a failure to paper over.
 
-`BUILD` · `TEST` · `REVISE` · `PARK` · `KILL`
+The conservative engine scores each run internally (`KILL` · `PARK` · `REVISE` ·
+`TEST`; **BUILD is disabled**, capped to TEST). The headline output is the E1
+review verdict from the nine gates:
+
+`E1_APPROVED_TO_RECORD` · `E1_REVISE_BEFORE_RECORDING` · `E1_PARK` · `E1_KILL`
 
 The final markdown brief is a summary. The `runs/{run_id}/` folder is the truth
 layer; the brief is only trusted because that folder can corroborate it.
+
+### E1 review gates (`e1_review.py`)
+
+The verdict is produced by nine deterministic gates, each recorded in
+`e1_review_gates.json` (written for pass **and** fail runs):
+
+1. `scope_lock` — Base member only; specific buyer; gap maps to the Base
+   pipeline. Fails for Member A/B, off-family drift, or generic templates.
+2. `minimum_real_observed_evidence` — ≥3 real observed sources.
+3. `demand_signal_exists` — external signal that the niche/problem is visible.
+4. `buyer_language_captured` — ≥5 verbatim buyer-language phrases.
+5. `observed_price_band` — ≥3 **verified observed prices** (leads/directional
+   never count — the price-band integrity rule is preserved).
+6. `competitor_presence` — ≥3 comparable competitors.
+7. `specific_missing_mechanism_gap` — a structural (not cosmetic/reskin) gap.
+8. `fit_to_andrew_authored_primitive` — evidence needs the authored mechanisms
+   (evidence-before-motion, state gates, listing readiness, launch tracking,
+   review loop).
+9. `no_fabrication` — no fabricated sources, invented quotes, or public execution.
+
+Approval additionally requires the conservative engine to have cleared its TEST
+bar, so an E1 approval is never *easier* than TEST. The repo can reach at most
+`E1_APPROVED_TO_RECORD`; `E1_RECORDED` and B2 acceptance are external Revenue OS
+acts, and B3 stays LOCKED.
 
 ---
 

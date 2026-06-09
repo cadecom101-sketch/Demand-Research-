@@ -124,6 +124,19 @@ class GateResult(BaseModel):
     reason: str = ""
 
 
+class E1ReviewGate(BaseModel):
+    """The outcome of one of the nine E1 demand-brief review gates.
+
+    Serialized into `e1_review_gates.json`. Status is upper-case PASS/FAIL to
+    match the review artifact schema, and every gate links the source IDs it
+    was judged against (empty for workflow-boundary gates)."""
+
+    gate_id: str
+    status: str = "FAIL"  # PASS | FAIL
+    reason: str = ""
+    supporting_source_ids: List[str] = Field(default_factory=list)
+
+
 class RunManifest(BaseModel):
     """The run conditions needed to reproduce / compare a run."""
 
@@ -147,4 +160,18 @@ class RunManifest(BaseModel):
     evidence_quality_score: float = 0.0
     fatal_gaps: List[str] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
+
+    # E1 demand-brief review (primitive/member hierarchy + recording readiness).
+    primitive_name: str = ""
+    target_member: str = ""
+    excluded_members: List[str] = Field(default_factory=list)
+    current_state: str = ""
+    candidate_state: str = ""
+    review_verdict: str = ""
+    recording_status: str = ""
+    b2_acceptance_status: str = ""
+    b3_status: str = ""
+    public_execution_status: str = ""
+    e1_review_gates_path: str = ""
+
     extra: dict = Field(default_factory=dict)

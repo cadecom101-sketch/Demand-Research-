@@ -6,6 +6,7 @@ claim ledger, search + rejected summaries, artifact paths) so a reader can see
 exactly how the verdict was reached and where to verify it.
 """
 
+import json
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -43,29 +44,41 @@ class _Renderer:
         self.audit: dict = brief.audit or {}
 
     # ------------------------------------------------------------------ #
+    def _e1(self) -> dict:
+        return self.audit.get("e1_review", {}) or (self.brief.e1_review or {})
+
     def render(self) -> str:
         b = self.brief
         L: list[str] = []
-        L.append(f"# Demand Brief: {b.product_hypothesis.product_name}")
+        L.append(f"# Demand Brief (E1 Review): {b.target_member}")
         L.append(f"Generated: {b.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
         L.append("")
+        L += self._status_block()
         L += self._executive_summary()
         L += self._hypothesis()
-        L += self._evidence_stage()
+        L += self._primitive_hierarchy()
+        L += self._scope_lock()
+        L += self._states()
+        L += self._review_verdict()
+        L += self._recording_readiness()
+        L += self._b2_b3_boundary()
         L += self._phase_results()
         L += self._score_breakdown()
         L += self._hard_gates()
+        L += self._e1_gate_results()
         L += self._buyer_language()
         L += self._price_band()
         L += self._competitor_map()
         L += self._missing_mechanism()
+        L += self._fit_to_primitive()
         L += self._claim_ledger()
         L += self._search_summary()
         L += self._rejected_summary()
         L += self._section("What This Proves", self.audit.get("what_proves", "Not assessed."))
         L += self._section("What This Does NOT Prove", self.audit.get("what_not_proves", "Not assessed."))
-        L += self._section("What Would Change This Decision", self.audit.get("what_would_change", "Not assessed."))
-        L += self._section("Next Recommended Experiment", self.audit.get("next_experiment", "Not assessed."))
+        L += self._section("What Would Change This Verdict", self.audit.get("what_would_change", "Not assessed."))
+        L += self._revenue_payload()
+        L += self._section("Next Recommended Step", self.audit.get("next_experiment", "Not assessed."))
         L += self._all_sources()
         L += self._audit_artifacts()
         L.append("---")
@@ -73,14 +86,43 @@ class _Renderer:
         return "\n".join(L)
 
     # ------------------------------------------------------------------ #
+    def _status_block(self) -> list[str]:
+        """The required, scannable E1 review status block."""
+        e1 = self._e1()
+        excluded = ", ".join(e1.get("excluded_members", [])) or "Member A, Member B"
+        rows = [
+            ("Primitive", e1.get("primitive_name", "")),
+            ("Target Member", e1.get("target_member", self.brief.target_member)),
+            ("Excluded Members", excluded),
+            ("Current State", e1.get("current_state", "E0_AUTHORED_CAPTURED")),
+            ("Candidate State", e1.get("candidate_state", "E1_CANDIDATE")),
+            ("Review Verdict", e1.get("review_verdict", self.brief.review_verdict or "")),
+            ("Recording Status", e1.get("recording_status", "NOT_RECORDED")),
+            ("B2 Acceptance", e1.get("b2_acceptance_status", "NOT_MET")),
+            ("B3 Status", e1.get("b3_status", "LOCKED")),
+            ("Public Execution Status", e1.get("public_execution_status", "NONE")),
+        ]
+        L = ["```text"]
+        for label, value in rows:
+            if label == "B2 Acceptance" and value == "NOT_MET":
+                value = "NOT_MET until Revenue OS rows are created"
+            L.append(f"{label}: {value}")
+        L.append("```")
+        L.append("")
+        return L
+
+    # ------------------------------------------------------------------ #
     def _executive_summary(self) -> list[str]:
         b = self.brief
+        e1 = self._e1()
         fatal = b.fatal_gaps or self.audit.get("fatal_gaps", [])
         fatal_str = "; ".join(fatal) if fatal else "None"
         return [
             "## Executive Summary",
-            f"- **Decision:** {b.decision.value}",
+            f"- **Review Verdict:** {e1.get('review_verdict', b.review_verdict or 'n/a')}",
             f"- **Evidence Stage:** {b.evidence_stage.value}",
+            f"- **Recording Status:** {e1.get('recording_status', 'NOT_RECORDED')}",
+            f"- **Decision (internal score tier; BUILD disabled):** {b.decision.value}",
             f"- **Evidence Quality:** {b.evidence_quality_score:.2%}",
             f"- **Run ID:** {b.run_id or 'n/a'}",
             f"- **Run Status:** {b.run_status}",
@@ -89,21 +131,160 @@ class _Renderer:
             "",
         ]
 
-    def _evidence_stage(self) -> list[str]:
-        stage = self.brief.evidence_stage.value
-        meaning = {
-            "E0": "Unproven. Stays E0 — does not yet earn build time (KILL / PARK / REVISE).",
-            "E1_CANDIDATE": "Earns the next cheapest external TEST (fake-door / pre-order).",
-            "POST_E1": "Past validation; build-justified by stronger evidence.",
-        }.get(stage, "")
-        return [
-            "## Evidence Stage",
+    def _primitive_hierarchy(self) -> list[str]:
+        e1 = self._e1()
+        excluded = e1.get("excluded_members", []) or []
+        L = [
+            "## Primitive / Member Hierarchy",
             "",
-            f"Evidence Stage: {stage}",
+            f"**Primitive (parent):** {e1.get('primitive_name', '')}",
+            f"**First member (validated here):** {e1.get('target_member', self.brief.target_member)}",
             "",
-            meaning,
+            "```text",
+            e1.get("primitive_name", "Governed Solo-Operator Launch OS"),
+            f"└── {e1.get('target_member', self.brief.target_member)}",
+            "    └── first E1 demand brief being created now",
+            "```",
+            "",
+            "**Deferred members (NOT validated by this repo, parked at E0):**",
+        ]
+        for m in excluded:
+            L.append(f"- {m}")
+        L.append("")
+        L.append("_This repo validates the FIRST member only. It does not validate the parent "
+                 "primitive universe, and it does not review Member A or Member B._")
+        L.append("")
+        return L
+
+    def _scope_lock(self) -> list[str]:
+        e1 = self._e1()
+        gate = next((g for g in e1.get("gates", []) if g.get("gate_id") == "scope_lock"), {})
+        L = [
+            "## Target Member and Scope Lock",
+            "",
+            f"**Target Member:** {e1.get('target_member', self.brief.target_member)}",
+            f"**Scope Lock:** {gate.get('status', 'n/a')} — {gate.get('reason', '')}",
+            "",
+            "_E1_REVIEW is for the Base demand brief under the Governed Solo-Operator Launch OS "
+            "primitive. It does not validate the whole primitive._",
             "",
         ]
+        return L
+
+    def _states(self) -> list[str]:
+        e1 = self._e1()
+        return [
+            "## Current State / Candidate State",
+            "",
+            f"- **Current State:** {e1.get('current_state', 'E0_AUTHORED_CAPTURED')} "
+            "(Andrew-authored draft; not recorded in Revenue OS; B3 not unlocked).",
+            f"- **Candidate State:** {e1.get('candidate_state', 'E1_CANDIDATE')} "
+            "(the brief under review).",
+            "",
+            "Target progression: `E0_AUTHORED_CAPTURED → E1_CANDIDATE → E1_APPROVED_TO_RECORD → "
+            "E1_RECORDED`. This repo can reach at most **E1_APPROVED_TO_RECORD**; "
+            "**E1_RECORDED** happens outside this repo in Revenue OS.",
+            "",
+        ]
+
+    def _review_verdict(self) -> list[str]:
+        e1 = self._e1()
+        verdict = e1.get("review_verdict", self.brief.review_verdict or "n/a")
+        meaning = {
+            "E1_APPROVED_TO_RECORD": "Passed E1 review; ready for human approval and external "
+                                     "recording into Revenue OS.",
+            "E1_REVISE_BEFORE_RECORDING": "Close, but one or more gates must be addressed before "
+                                          "recording.",
+            "E1_PARK": "Insufficient documented desk evidence to become an E1 candidate yet.",
+            "E1_KILL": "Do not record — evidence integrity failed.",
+        }.get(verdict, "")
+        return [
+            "## E1 Review Verdict",
+            "",
+            f"**{verdict}** — {meaning}",
+            "",
+            "_This is a recording-readiness verdict, not a BUILD/TEST recommendation. BUILD is "
+            "disabled in this workflow and the repo never performs public execution._",
+            "",
+        ]
+
+    def _recording_readiness(self) -> list[str]:
+        e1 = self._e1()
+        return [
+            "## Recording Readiness",
+            "",
+            f"- **Recording Status:** {e1.get('recording_status', 'NOT_RECORDED')}",
+            "- Recording into Revenue OS is an **external** act (outside this repo) and is what "
+            "turns `E1_CANDIDATE / E1_APPROVED_TO_RECORD` into `E1_RECORDED`.",
+            "- This repo drafts the recording payload (below) but never writes it.",
+            "",
+        ]
+
+    def _b2_b3_boundary(self) -> list[str]:
+        e1 = self._e1()
+        return [
+            "## B2 / B3 Boundary",
+            "",
+            f"- **B2 Acceptance:** {e1.get('b2_acceptance_status', 'NOT_MET')} — "
+            "B2 is satisfied only when Revenue OS rows are created (outside this repo).",
+            f"- **B3 Status:** {e1.get('b3_status', 'LOCKED')} — this repo never unlocks B3, even "
+            "when the brief is approved.",
+            f"- **Public Execution Status:** {e1.get('public_execution_status', 'NONE')} — no "
+            "publishing, listing, ads, scraping, or seller/customer contact.",
+            "",
+        ]
+
+    def _e1_gate_results(self) -> list[str]:
+        e1 = self._e1()
+        gates = e1.get("gates", [])
+        L = ["## E1 Review Gate Results", ""]
+        if not gates:
+            return L + ["No E1 review gates were evaluated for this run.", ""]
+        L.append("| Gate | Status | Reason | Supporting Sources |")
+        L.append("| ---- | ------ | ------ | ------------------ |")
+        for g in gates:
+            supp = ", ".join(g.get("supporting_source_ids", [])) or "—"
+            reason = (g.get("reason", "") or "").replace("|", "\\|")
+            L.append(f"| {g.get('gate_id','')} | {g.get('status','')} | {reason} | {supp} |")
+        L.append("")
+        return L
+
+    def _fit_to_primitive(self) -> list[str]:
+        e1 = self._e1()
+        gate = next((g for g in e1.get("gates", [])
+                     if g.get("gate_id") == "fit_to_andrew_authored_primitive"), {})
+        return [
+            "## Fit to Andrew's Authored Primitive",
+            "",
+            f"**Fit gate:** {gate.get('status', 'n/a')} — {gate.get('reason', '')}",
+            "",
+            "_The authored primitive mechanism: evidence before motion; separate the object from "
+            "its evidence; gate every state transition; preserve authorship rationale; force a "
+            "human decision when risk is detected._",
+            "",
+        ]
+
+    def _revenue_payload(self) -> list[str]:
+        e1 = self._e1()
+        payload = self.audit.get("revenue_os_payload_draft") or e1.get("revenue_os_payload_draft") \
+            or (self.brief.e1_review or {}).get("revenue_os_payload_draft", {})
+        L = [
+            "## Revenue OS Recording Payload Draft",
+            "",
+            "> **DRAFT ONLY — NOT RECORDED — DO NOT WRITE TO REVENUE OS FROM THIS REPO — "
+            "HUMAN REVIEW REQUIRED**",
+            "",
+        ]
+        if not payload:
+            return L + ["No payload draft was generated.", ""]
+        L.append("```json")
+        L.append(json.dumps(payload, ensure_ascii=False, indent=2))
+        L.append("```")
+        L.append("")
+        L.append("_Recording these rows into Revenue OS is the separate, external act that "
+                 "satisfies B2. This repo does not perform it._")
+        L.append("")
+        return L
 
     def _incomplete(self, phase_present: bool) -> Optional[str]:
         if phase_present:

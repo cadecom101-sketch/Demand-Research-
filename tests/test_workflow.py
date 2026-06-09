@@ -124,7 +124,9 @@ def test_full_workflow_builds_when_evidence_strong(tmp_path):
     assert brief.phase_3_result.status == PhaseStatus.PASS
     assert brief.phase_4_result.status == PhaseStatus.PASS
     assert brief.phase_5_result.status == PhaseStatus.PASS
-    assert brief.decision in (Decision.BUILD, Decision.REVISE)
+    # BUILD is disabled in the E1 demand-brief workflow; strong evidence caps to TEST.
+    assert brief.decision in (Decision.TEST, Decision.REVISE)
+    assert brief.decision != Decision.BUILD
     # Every source carries a real-looking URL and a date.
     for s in brief.all_sources():
         assert str(s.url).startswith("https://")

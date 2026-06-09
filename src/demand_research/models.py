@@ -13,8 +13,30 @@ class PhaseStatus(str, Enum):
     FAIL = "FAIL"
 
 
+# --------------------------------------------------------------------------- #
+# Primitive / member hierarchy (this repo validates the FIRST member only).
+#
+#   Governed Solo-Operator Launch OS            (PARENT primitive — Andrew-authored)
+#   └── Base — Retail Instant-Download OS       (FIRST member — validated here)
+#       └── first E1 demand brief being created now
+#
+# Member A and Member B are deferred at E0 and are NOT validated by this repo.
+# --------------------------------------------------------------------------- #
+PRIMITIVE_NAME = "Governed Solo-Operator Launch OS"
+BASE_MEMBER_NAME = "Base — Retail Instant-Download OS"
+MEMBER_A_NAME = "Member A — Recurring Code & Integration Toolsmith"
+MEMBER_B_NAME = "Member B — High-Touch Productized Build Operator"
+EXCLUDED_MEMBERS = [MEMBER_A_NAME, MEMBER_B_NAME]
+
+
 class Decision(str, Enum):
-    """Enum for final product decision."""
+    """Internal score-tier decision from the evidence engine.
+
+    In the `e1-demand-brief` workflow BUILD is disabled (a five-phase desk
+    research run can never justify BUILD); it is capped to TEST before it
+    becomes a review verdict. The enum is retained because the scorecard and
+    conservative hard gates are expressed in these terms.
+    """
     BUILD = "BUILD"
     TEST = "TEST"
     REVISE = "REVISE"
@@ -23,29 +45,65 @@ class Decision(str, Enum):
 
 
 class EvidenceStage(str, Enum):
-    """Where the idea sits on the E0 -> E1 -> post-E1 ladder.
+    """Where the member sits on the recording ladder.
 
-    The demand brief usually decides whether an idea earns the next cheapest
-    TEST (E1-candidate), not whether it should be fully built.
+    The repo may reach E1_APPROVED_TO_RECORD at most. E1_RECORDED happens
+    OUTSIDE this repo, in Revenue OS, and may only ever be an imported status.
     """
-    E0 = "E0"                      # unproven; stays E0 (KILL / PARK / REVISE)
-    E1_CANDIDATE = "E1_CANDIDATE"  # earns a cheap external test (TEST)
-    POST_E1 = "POST_E1"            # past validation; build-justified (BUILD)
+    E0_AUTHORED_CAPTURED = "E0_AUTHORED_CAPTURED"      # authored draft, not recorded
+    E1_CANDIDATE = "E1_CANDIDATE"                      # candidate brief under review
+    E1_APPROVED_TO_RECORD = "E1_APPROVED_TO_RECORD"    # passed E1 review; ready to record
+    E1_RECORDED = "E1_RECORDED"                        # EXTERNAL only (Revenue OS)
 
 
-# Decision -> evidence stage. BUILD is deliberately the only POST_E1 mapping.
-DECISION_TO_STAGE = {
-    Decision.KILL: EvidenceStage.E0,
-    Decision.PARK: EvidenceStage.E0,
-    Decision.REVISE: EvidenceStage.E0,
-    Decision.TEST: EvidenceStage.E1_CANDIDATE,
-    Decision.BUILD: EvidenceStage.POST_E1,
+class ReviewVerdict(str, Enum):
+    """The E1 demand-brief review verdict (replaces BUILD/TEST as the output)."""
+    E1_APPROVED_TO_RECORD = "E1_APPROVED_TO_RECORD"
+    E1_REVISE_BEFORE_RECORDING = "E1_REVISE_BEFORE_RECORDING"
+    E1_PARK = "E1_PARK"
+    E1_KILL = "E1_KILL"
+
+
+class RecordingStatus(str, Enum):
+    """Whether the member is ready to be recorded into Revenue OS."""
+    NOT_RECORDED = "NOT_RECORDED"
+    READY_TO_RECORD = "READY_TO_RECORD"
+    RECORDED = "RECORDED"  # EXTERNAL only (Revenue OS)
+
+
+class B2Status(str, Enum):
+    """B2 acceptance. ACCEPTED happens outside this repo, in Revenue OS."""
+    NOT_MET = "NOT_MET"
+    READY_FOR_ACCEPTANCE = "READY_FOR_ACCEPTANCE"
+    ACCEPTED_OUTSIDE_REPO = "ACCEPTED_OUTSIDE_REPO"  # EXTERNAL only
+
+
+class B3Status(str, Enum):
+    """B3 expansion. This repo never unlocks B3; it stays LOCKED."""
+    LOCKED = "LOCKED"
+    ELIGIBLE_AFTER_RECORDING = "ELIGIBLE_AFTER_RECORDING"
+
+
+# Internal score-tier decision -> review verdict. BUILD is treated exactly like
+# TEST here because BUILD is disabled/capped in the demand-brief workflow.
+DECISION_TO_VERDICT = {
+    Decision.KILL: ReviewVerdict.E1_KILL,
+    Decision.PARK: ReviewVerdict.E1_PARK,
+    Decision.REVISE: ReviewVerdict.E1_REVISE_BEFORE_RECORDING,
+    Decision.TEST: ReviewVerdict.E1_APPROVED_TO_RECORD,
+    Decision.BUILD: ReviewVerdict.E1_APPROVED_TO_RECORD,
 }
 
 
-def evidence_stage_for(decision: Decision) -> EvidenceStage:
-    """Map a final decision to its evidence stage."""
-    return DECISION_TO_STAGE.get(decision, EvidenceStage.E0)
+def evidence_stage_for(verdict: ReviewVerdict) -> EvidenceStage:
+    """Map an E1 review verdict to its evidence-ladder stage.
+
+    Only an approved verdict advances past the authored-capture stage, and only
+    as far as E1_APPROVED_TO_RECORD — recording itself is external.
+    """
+    if verdict == ReviewVerdict.E1_APPROVED_TO_RECORD:
+        return EvidenceStage.E1_APPROVED_TO_RECORD
+    return EvidenceStage.E0_AUTHORED_CAPTURED
 
 
 class ProductHypothesis(BaseModel):
@@ -109,9 +167,17 @@ class DemandBrief(BaseModel):
     decision: Decision
     decision_reasoning: str
     evidence_quality_score: float = Field(ge=0.0, le=1.0)
-    evidence_stage: EvidenceStage = EvidenceStage.E0
+    evidence_stage: EvidenceStage = EvidenceStage.E0_AUTHORED_CAPTURED
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # E1 demand-brief review (primitive/member hierarchy + recording readiness).
+    # The repo validates ONE member (Base) under the primitive and produces a
+    # reviewable verdict; it never records into Revenue OS or unlocks B3.
+    primitive_name: str = PRIMITIVE_NAME
+    target_member: str = BASE_MEMBER_NAME
+    review_verdict: Optional[str] = None
+    e1_review: Optional[dict] = None
 
     # Audit / provenance (populated by the orchestrator + RunRecorder). The
     # `audit` bundle carries the scorecard, hard-gate results, claim ledger,

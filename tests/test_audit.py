@@ -298,13 +298,15 @@ def test_json_artifacts_parse_cleanly(tmp_path):
     assert not list(rec.run_dir.glob("*.tmp"))
 
 
-def test_strong_evidence_can_build(tmp_path):
+def test_strong_evidence_caps_build_to_test(tmp_path):
     rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=_researcher(_strong_sources(), _GAP))
     brief = asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
-    # All gates clear, strong score -> BUILD.
-    assert brief.decision == Decision.BUILD
+    # BUILD is disabled in the E1 demand-brief workflow: strong evidence caps to
+    # TEST (never BUILD). The internal score tier is recorded as TEST.
+    assert brief.decision == Decision.TEST
+    assert brief.decision != Decision.BUILD
     manifest = json.loads((rec.run_dir / "run_manifest.json").read_text())
-    assert manifest["final_decision"] == "BUILD"
+    assert manifest["final_decision"] == "TEST"
     assert manifest["validated_source_count"] >= 12
     assert manifest["rejected_source_count"] >= 1

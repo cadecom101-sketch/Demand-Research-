@@ -18,13 +18,19 @@ from demand_research.audit.grading import (
 )
 from demand_research.audit.models import BuyerLanguageArtifact, SourceLedgerEntry
 from demand_research.decision_engine import FORMULA_VERSION, DecisionEngine
+from demand_research.e1_review import (
+    build_e1_claims,
+    evaluate_e1_review,
+    next_step_for,
+    normalize_target_member,
+    what_would_change_for,
+)
 from demand_research.models import (
     Decision,
     DemandBrief,
     PhaseResult,
     PhaseStatus,
     ProductHypothesis,
-    evidence_stage_for,
 )
 from demand_research.research.claude_researcher import ClaudeResearcher, ResearchUnavailableError
 from demand_research.agents.phase_agents import (
@@ -55,9 +61,17 @@ class ResearchOrchestrator:
         self.phase4 = Phase4Agent(researcher=shared)
         self.phase5 = Phase5Agent(researcher=shared)
         self.decision_engine = DecisionEngine()
+        # Defaults for the E1 demand-brief workflow (Base member only).
+        self._workflow_mode = "e1-demand-brief"
+        self._target_member = "Base"
 
     async def run_workflow(
-        self, hypothesis: ProductHypothesis, recorder: Optional[object] = None
+        self,
+        hypothesis: ProductHypothesis,
+        recorder: Optional[object] = None,
+        *,
+        target_member: str = "Base",
+        workflow_mode: str = "e1-demand-brief",
     ) -> DemandBrief:
         """Execute the workflow, stopping at the first phase failure.
 
@@ -65,14 +79,22 @@ class ResearchOrchestrator:
         `runs/{run_id}/` truth-layer directory. Without one, the audit bundle is
         still computed in-memory (so the brief carries the scorecard/gates) but
         no files are written.
+
+        `target_member` selects which member under the primitive is being
+        validated. This repo validates the Base member only; Member A/B fail the
+        scope-lock gate. `workflow_mode` defaults to `e1-demand-brief`, in which
+        BUILD is disabled and the output is an E1 recording-readiness verdict.
         """
         logger.info("Starting research workflow for: %s", hypothesis.product_name)
+        self._workflow_mode = workflow_mode
+        self._target_member = target_member
 
         brief = DemandBrief(
             product_hypothesis=hypothesis,
             decision=Decision.PARK,
             decision_reasoning="Workflow in progress",
             evidence_quality_score=0.0,
+            target_member=normalize_target_member(target_member)[0],
         )
 
         try:
@@ -144,10 +166,23 @@ class ResearchOrchestrator:
         signals = compute_signals(phase_by_num, run_status)
         outcome = self.decision_engine.decide(hypothesis, phase_results, all_sources, signals)
 
-        brief.decision = outcome.decision
-        brief.decision_reasoning = outcome.reasoning
+        # BUILD is disabled in the E1 demand-brief workflow: a five-phase desk
+        # research run can never justify BUILD. Cap it to TEST before it becomes
+        # a review verdict. The conservative gates/score are NOT changed.
+        capped_decision = outcome.decision
+        build_capped = (
+            self._workflow_mode == "e1-demand-brief" and outcome.decision == Decision.BUILD
+        )
+        if build_capped:
+            capped_decision = Decision.TEST
+
+        brief.decision = capped_decision
+        brief.decision_reasoning = outcome.reasoning + (
+            " BUILD is disabled in the E1 demand-brief workflow; capped to TEST "
+            "(E1_APPROVED_TO_RECORD candidate). Recording remains external."
+            if build_capped else ""
+        )
         brief.evidence_quality_score = outcome.score
-        brief.evidence_stage = evidence_stage_for(outcome.decision)
         brief.run_status = run_status
         brief.fatal_gaps = outcome.fatal_gaps
 
@@ -159,6 +194,31 @@ class ResearchOrchestrator:
             price_artifacts=price_bands,
             price_lead_count=price_lead_count,
             directional=directional,
+        )
+
+        # E1 review: nine recording-readiness gates -> verdict + recording/B2/B3
+        # status. Approval is additionally coupled to the conservative TEST bar
+        # so it can never be easier than the existing engine's TEST.
+        e1 = evaluate_e1_review(
+            hypothesis=hypothesis, brief=brief, signals=signals, graded=graded,
+            price_bands=price_bands, directional=directional, competitors=competitors,
+            missing_mechanism=missing_mechanism, target_member=self._target_member,
+            decision_cleared_test=capped_decision in (Decision.TEST, Decision.BUILD),
+        )
+        brief.evidence_stage = e1.evidence_stage
+        brief.review_verdict = e1.review_verdict
+        brief.target_member = e1.target_member
+        brief.e1_review = {
+            **e1.to_artifact(run_id),
+            "revenue_os_payload_draft": e1.revenue_os_payload_draft,
+        }
+
+        # E1 claims 6–9 (fit + workflow-boundary) extend the ledger.
+        claims = claims + build_e1_claims(
+            run_id, e1, start_index=len(claims),
+            fit_gate_passed=e1.gate_passed("fit_to_andrew_authored_primitive"),
+            scope_gate_passed=e1.gate_passed("scope_lock"),
+            fit_source_ids=e1.gate_source_ids("fit_to_andrew_authored_primitive"),
         )
 
         what_not_proves = _what_not_proves(claims)
@@ -180,15 +240,24 @@ class ResearchOrchestrator:
             "gates": [g.model_dump(mode="json") for g in outcome.gates],
             "fatal_gaps": outcome.fatal_gaps,
             "run_status": run_status,
-            "next_experiment": _next_experiment(outcome.decision, hypothesis),
+            "next_experiment": next_step_for(e1),
             "what_proves": _what_proves(claims),
             "what_not_proves": what_not_proves,
-            "what_would_change": _what_would_change(outcome),
+            "what_would_change": what_would_change_for(e1),
             "price_leads": price_lead_count,
             "directional": directional,
+            # E1 review surface (read by the markdown renderer + manifest).
+            "e1_review": e1.to_artifact(run_id),
+            "revenue_os_payload_draft": e1.revenue_os_payload_draft,
+            "primitive_name": e1.primitive_name,
+            "target_member": e1.target_member,
+            "excluded_members": e1.excluded_members,
         }
 
         if recorder is not None:
+            # Write the E1 gates artifact (pass AND fail runs) before finalize so
+            # the manifest can summarise the review state.
+            recorder.write_e1_review_gates(e1.to_artifact(run_id))
             recorder.finalize(brief, audit_core, claims)
         else:
             # In-memory bundle (no files). Markdown still renders audit sections.
@@ -204,12 +273,13 @@ class ResearchOrchestrator:
                 "price_bands": price_bands,
                 "competitors": competitors,
                 "missing_mechanism": missing_mechanism,
+                "e1_review_gates": e1.to_artifact(run_id),
                 "artifact_paths": {},
             }
 
         logger.info(
-            "Workflow complete. Decision: %s -> stage %s (quality: %.2f, status: %s)",
-            brief.decision.value, brief.evidence_stage.value, brief.evidence_quality_score, run_status,
+            "Workflow complete. Verdict: %s -> stage %s (quality: %.2f, status: %s)",
+            brief.review_verdict, brief.evidence_stage.value, brief.evidence_quality_score, run_status,
         )
         return brief
 
@@ -371,23 +441,6 @@ def _tier_for(price: float) -> str:
     return "premium"
 
 
-def _next_experiment(decision: Decision, hypothesis: ProductHypothesis) -> str:
-    if decision == Decision.BUILD:
-        return ("Build a minimal version and list it on "
-                f"{hypothesis.primary_channel}; instrument conversion from view to purchase.")
-    if decision == Decision.TEST:
-        return ("Run a fake-door / pre-order test (landing page or single listing) to measure "
-                "real purchase intent before committing build time.")
-    if decision == Decision.REVISE:
-        return ("Tighten the target buyer and the missing-mechanism statement, then re-run the "
-                "buyer-language phase with broader, problem-first search queries.")
-    if decision == Decision.PARK:
-        return ("Re-run later with broader buyer-language searches and seek behavioral (Grade A) "
-                "evidence before investing.")
-    return ("Do not pursue as-is. Only revisit if the hypothesis (buyer, job, or mechanism) "
-            "materially changes.")
-
-
 def _what_proves(claims: list) -> str:
     supported = [c.claim for c in claims if c.status == "supported"]
     if not supported:
@@ -400,13 +453,3 @@ def _what_not_proves(claims: list) -> str:
     if not weak:
         return "All assessed claims were supported at their required grade."
     return " ".join(f"- {w}" for w in weak)
-
-
-def _what_would_change(outcome) -> str:
-    if outcome.overrides:
-        return ("Clearing these capped gates would raise the verdict: "
-                + "; ".join(outcome.overrides) + ".")
-    if outcome.decision in (Decision.BUILD, Decision.TEST):
-        return "A failed behavioral/fake-door test would lower the verdict back to REVISE/PARK."
-    return ("Stronger evidence — more verbatim buyer-language artifacts (Grade B) or behavioral "
-            "purchase signals (Grade A) — would raise the verdict.")
