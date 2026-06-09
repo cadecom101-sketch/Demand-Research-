@@ -18,7 +18,11 @@ from demand_research.models import (
     PhaseStatus,
     SourceCard,
 )
-from demand_research.research.claude_researcher import ClaudeResearcher
+from demand_research.research.claude_researcher import (
+    ClaudeResearcher,
+    chunk_text,
+    dedupe_raw_sources,
+)
 from demand_research.research.evidence_validator import EvidenceValidator
 from demand_research.research.query_planner import prompt_appendix
 from demand_research.research.source_collector import SourceCollector
@@ -41,8 +45,29 @@ RESEARCH_SYSTEM = (
 EXTRACT_SYSTEM = (
     "You convert research notes into strict JSON. Only include items that have "
     "a real source URL present in the notes. Do not invent data. If a field is "
-    "unknown, use null. Output a single JSON object and nothing else."
+    "unknown, omit it or use null. Output a single JSON object and nothing else: "
+    "no markdown, no code fences, no prose. Include at most 10 sources. Keep every "
+    "text field under 200 characters and on a single line (no embedded newlines). "
+    "If you are running low on room, return FEWER complete source objects rather "
+    "than a truncated final object."
 )
+
+# Output-discipline rules appended to every extraction instruction. They reduce
+# the chance of truncated/malformed JSON; they do not change any evidence bar.
+_EXTRACTION_RULES = (
+    "STRICT OUTPUT RULES (follow exactly):\n"
+    "- Output JSON only. No markdown, no code fences, no explanation.\n"
+    "- At most 10 sources in the \"sources\" array.\n"
+    "- Every text field <= 200 characters.\n"
+    "- No newline characters inside any string value.\n"
+    "- Omit unknown fields or set them to null; never guess.\n"
+    "- Always close every object and the array. If space runs short, emit fewer "
+    "COMPLETE source objects rather than a cut-off final object."
+)
+
+# Research findings longer than this are extracted in smaller chunks so a single
+# over-long response cannot truncate and lose everything.
+_EXTRACTION_CHUNK_CHAR_LIMIT = 12000
 
 # The JSON shape every extraction must follow (described in-prompt since we
 # parse defensively rather than relying on a specific structured-output API).
@@ -161,28 +186,8 @@ class BasePhaseAgent:
             url_list = "\n".join(f"- {u}" for u in result.citations)
             findings_for_extraction = f"{result.text}\n\nSource URLs found:\n{url_list}"
 
-        extraction = self.researcher.extract(
-            findings_for_extraction,
-            f"{extract_instruction}\n\n{_SOURCE_JSON_SHAPE}",
-            system=EXTRACT_SYSTEM,
-        )
-        # Persist the EXACT extraction response BEFORE parsing is trusted, and
-        # record any parse failure to the extraction-error ledger. A failed
-        # parse yields no sources — never fabricated placeholders.
-        if recorder is not None:
-            recorder.write_raw_extraction(self.phase_number, extraction.raw_text)
-            if extraction.parse_error is not None:
-                recorder.log_extraction_error(
-                    self.phase_number,
-                    error_type=extraction.parse_error.get("error_type", "parse_error"),
-                    error_message=extraction.parse_error.get("error_message", ""),
-                    parser_step=extraction.parse_error.get("parser_step", ""),
-                    raw_preview=extraction.raw_text,
-                )
-        data = extraction.data if isinstance(extraction.data, dict) else {}
-        raw_sources = data.get("sources", []) if isinstance(data, dict) else []
-        if not isinstance(raw_sources, list):
-            raw_sources = []
+        full_instruction = f"{extract_instruction}\n\n{_SOURCE_JSON_SHAPE}\n\n{_EXTRACTION_RULES}"
+        raw_sources = self._run_extraction(findings_for_extraction, full_instruction, recorder)
         if recorder is not None:
             recorder.bump_raw(len(raw_sources))
 
@@ -215,6 +220,66 @@ class BasePhaseAgent:
                         reason=reason, validator_rule=rule,
                     )
         return cards, result.text.strip()
+
+    def _run_extraction(
+        self,
+        findings: str,
+        instruction: str,
+        recorder: Optional[Any],
+    ) -> list:
+        """Extract raw source dicts from findings — chunked + salvage-aware.
+
+        Long research text is split into smaller extraction chunks so a single
+        truncated response cannot lose everything. Each chunk is parsed and
+        salvaged independently; complete source objects are merged and de-duped by
+        (url, source_name). One bad chunk never erases good chunks. The exact
+        per-phase and per-chunk raw responses are persisted before parsing is
+        trusted. Nothing is fabricated: a chunk that yields no complete object
+        contributes nothing.
+        """
+        chunks = chunk_text(findings, _EXTRACTION_CHUNK_CHAR_LIMIT)
+        chunked = len(chunks) > 1
+        raw_parts: list[str] = []
+        merged: list = []
+
+        for idx, chunk in enumerate(chunks, start=1):
+            extraction = self.researcher.extract(chunk, instruction, system=EXTRACT_SYSTEM)
+            raw_parts.append(extraction.raw_text)
+            chunk_id = f"chunk_{idx}" if chunked else None
+            if recorder is not None:
+                if chunked:
+                    recorder.write_raw_extraction_chunk(self.phase_number, idx, extraction.raw_text)
+                if extraction.parse_error is not None:
+                    pe = extraction.parse_error
+                    recorder.log_extraction_error(
+                        self.phase_number,
+                        error_type=pe.get("error_type", "parse_error"),
+                        error_message=pe.get("error_message", ""),
+                        parser_step=pe.get("parser_step", ""),
+                        raw_preview=extraction.raw_text,
+                        line=pe.get("line"), column=pe.get("column"),
+                        char_position=pe.get("char_position"), excerpt=pe.get("excerpt"),
+                        chunk_id=chunk_id,
+                    )
+                elif extraction.salvage is not None:
+                    recorder.log_extraction_salvage(
+                        self.phase_number, extraction.salvage, chunk_id=chunk_id,
+                    )
+            data = extraction.data if isinstance(extraction.data, dict) else {}
+            srcs = data.get("sources", []) if isinstance(data, dict) else []
+            if isinstance(srcs, list):
+                merged.extend(s for s in srcs if isinstance(s, dict))
+
+        # Persist the combined per-phase raw response (compatibility filename),
+        # whether or not the pass was chunked.
+        if recorder is not None:
+            combined = (
+                raw_parts[0] if not chunked
+                else "\n\n=== CHUNK SPLIT ===\n\n".join(raw_parts)
+            )
+            recorder.write_raw_extraction(self.phase_number, combined)
+
+        return dedupe_raw_sources(merged)
 
     def _build_card(
         self,
@@ -621,13 +686,18 @@ class Phase5Agent(BasePhaseAgent):
         if recorder is not None:
             recorder.write_raw_extraction(self.phase_number, extraction.raw_text)
             if extraction.parse_error is not None:
+                pe = extraction.parse_error
                 recorder.log_extraction_error(
                     self.phase_number,
-                    error_type=extraction.parse_error.get("error_type", "parse_error"),
-                    error_message=extraction.parse_error.get("error_message", ""),
-                    parser_step=extraction.parse_error.get("parser_step", ""),
+                    error_type=pe.get("error_type", "parse_error"),
+                    error_message=pe.get("error_message", ""),
+                    parser_step=pe.get("parser_step", ""),
                     raw_preview=extraction.raw_text,
+                    line=pe.get("line"), column=pe.get("column"),
+                    char_position=pe.get("char_position"), excerpt=pe.get("excerpt"),
                 )
+            elif extraction.salvage is not None:
+                recorder.log_extraction_salvage(self.phase_number, extraction.salvage)
         data = extraction.data if isinstance(extraction.data, dict) else {}
         is_structural = _coerce_bool(data.get("is_structural"))
         gap_statement = _coerce_str(data.get("gap_statement")) or ""

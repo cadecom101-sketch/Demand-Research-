@@ -127,6 +127,7 @@ class RunRecorder:
         self.rejected_source_count = 0
         self.buyer_language_artifact_count = 0
         self._extraction_error_count = 0
+        self._extraction_salvage_count = 0
         self.run_status = "success"
 
         self._search_counts: Counter = Counter()
@@ -320,6 +321,11 @@ class RunRecorder:
         """Number of extraction parse failures logged this run."""
         return self._extraction_error_count
 
+    @property
+    def extraction_salvage_count(self) -> int:
+        """Number of source-object salvage events logged this run."""
+        return self._extraction_salvage_count
+
     # ------------------------------------------------------------------ #
     # Raw research / extraction capture (debug audit trail)
     # ------------------------------------------------------------------ #
@@ -351,6 +357,13 @@ class RunRecorder:
         parsing — written whether or not parsing later succeeds."""
         self._write_text(f"raw_extraction_response_phase_{phase_number}.txt", text or "")
 
+    def write_raw_extraction_chunk(self, phase_number: int, chunk_index: int, text: str) -> None:
+        """Persist the EXACT extraction response for one chunk of a chunked
+        extraction pass (in addition to the combined per-phase file)."""
+        self._write_text(
+            f"raw_extraction_response_phase_{phase_number}_chunk_{chunk_index}.txt", text or "",
+        )
+
     def log_extraction_error(
         self,
         phase_number: int,
@@ -358,12 +371,18 @@ class RunRecorder:
         error_message: str,
         parser_step: str,
         raw_preview: str,
+        *,
+        line: Optional[int] = None,
+        column: Optional[int] = None,
+        char_position: Optional[int] = None,
+        excerpt: Optional[str] = None,
+        chunk_id: Optional[str] = None,
     ) -> None:
         """Append a failed extraction-parse attempt to extraction_errors.jsonl.
 
-        Records only what is needed to debug the parse failure — never API keys,
-        credentials, or system prompts. `raw_preview` is a short, truncated slice
-        of the (already non-secret) model extraction output.
+        Records the JSONDecodeError location (line/column/char position) and a
+        ~500-char excerpt around the failure so a truncation/malformed response
+        is debuggable. Never logs API keys, credentials, or system prompts.
         """
         if self.run_status == "success":
             self.run_status = "partial"
@@ -371,15 +390,62 @@ class RunRecorder:
         record = {
             "timestamp_utc": _utc_now_iso(),
             "phase": f"phase_{phase_number}",
+            "chunk_id": chunk_id,
             "error_type": error_type,
             "error_message": error_message,
             "parser_step_failed": parser_step,
+            "line": line,
+            "column": column,
+            "char_position": char_position,
+            "excerpt": (excerpt or "")[:500],
             "raw_preview": (raw_preview or "")[:300],
         }
         self._append_jsonl("extraction_errors.jsonl", record)
         self.add_note(
-            f"phase_{phase_number} extraction parse failed ({parser_step}); "
-            "no sources accepted from that pass (fail-closed)."
+            f"phase_{phase_number} extraction parse failed ({parser_step}"
+            f"{', ' + chunk_id if chunk_id else ''}); no sources accepted from that "
+            "pass (fail-closed)."
+        )
+
+    def log_extraction_salvage(
+        self,
+        phase_number: int,
+        stats: dict,
+        *,
+        chunk_id: Optional[str] = None,
+    ) -> None:
+        """Record a partial-recovery (source-object salvage) event.
+
+        Complete source objects were recovered from an otherwise malformed or
+        truncated response; the broken tail was discarded (never repaired). This
+        is a degraded extraction, so the run is marked `partial` — salvage
+        preserves valid evidence for the ledger and phase pass/fail, but the run
+        can never be certified clean.
+        """
+        if self.run_status == "success":
+            self.run_status = "partial"
+        self._extraction_salvage_count += 1
+        record = {
+            "timestamp_utc": _utc_now_iso(),
+            "phase": f"phase_{phase_number}",
+            "chunk_id": chunk_id,
+            "error_type": "recovered_via_source_object_salvage",
+            "parser_step_failed": stats.get("parser_step", "source_object_salvage"),
+            "salvaged_source_objects": int(stats.get("salvaged_source_objects", 0)),
+            "discarded_malformed_source_objects": int(
+                stats.get("discarded_malformed_source_objects", 0)
+            ),
+            "line": stats.get("line"),
+            "column": stats.get("column"),
+            "char_position": stats.get("char_position"),
+            "excerpt": (stats.get("excerpt") or "")[:500],
+        }
+        self._append_jsonl("extraction_errors.jsonl", record)
+        self.add_note(
+            f"phase_{phase_number} extraction was truncated/malformed"
+            f"{', ' + chunk_id if chunk_id else ''}; salvaged "
+            f"{record['salvaged_source_objects']} complete source object(s), discarded "
+            f"{record['discarded_malformed_source_objects']} (run marked partial)."
         )
 
     # ------------------------------------------------------------------ #
