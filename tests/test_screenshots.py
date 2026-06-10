@@ -204,7 +204,7 @@ def test_playwright_capture_without_playwright_skips_not_raises():
 def test_default_run_records_skips_per_accepted_source(tmp_path):
     brief, rec = _run(tmp_path)  # default: capture disabled
     shots = [json.loads(l) for l in
-             (rec.run_dir / "screenshots.jsonl").read_text().splitlines() if l.strip()]
+             (rec.run_dir / "screenshots.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     assert shots, "every accepted source gets a screenshot record, even skips"
     for s in shots:
         assert s["attempted"] is False and s["success"] is False
@@ -212,7 +212,7 @@ def test_default_run_records_skips_per_accepted_source(tmp_path):
         assert s["file_path"] is None and s["sha256"] is None
     # Ledger entries carry the same honest audit status.
     entries = [json.loads(l) for l in
-               (rec.run_dir / "source_ledger.jsonl").read_text().splitlines() if l.strip()]
+               (rec.run_dir / "source_ledger.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     assert all(e["audit_status"] == "capture_unavailable" for e in entries)
     assert all(e["screenshot_filename"] is None for e in entries)
     # Coverage says exactly why the audit is not complete.
@@ -240,7 +240,7 @@ def test_successful_capture_records_full_metadata(tmp_path):
     fake = FakeScreenshotCapture()
     brief, rec = _run(tmp_path, screenshotter=fake)
     shots = [json.loads(l) for l in
-             (rec.run_dir / "screenshots.jsonl").read_text().splitlines() if l.strip()]
+             (rec.run_dir / "screenshots.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     assert shots and all(s["success"] for s in shots)
     for s in shots:
         assert s["source_id"].startswith("S")
@@ -257,13 +257,13 @@ def test_successful_capture_records_full_metadata(tmp_path):
 def test_accepted_price_and_competitor_artifacts_link_screenshots(tmp_path):
     _, rec = _run(tmp_path, screenshotter=FakeScreenshotCapture())
     prices = [json.loads(l) for l in
-              (rec.run_dir / "price_band_artifacts.jsonl").read_text().splitlines()
+              (rec.run_dir / "price_band_artifacts.jsonl").read_text(encoding="utf-8").splitlines()
               if l.strip()]
     assert prices and all(
         (r["screenshot_filename"] or "").startswith("screenshots/") for r in prices
     )
     entries = [json.loads(l) for l in
-               (rec.run_dir / "source_ledger.jsonl").read_text().splitlines() if l.strip()]
+               (rec.run_dir / "source_ledger.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     assert all(e["audit_status"] == "audit_complete" for e in entries)
     assert all((e["screenshot_filename"] or "").startswith("screenshots/")
                for e in entries)
@@ -282,7 +282,7 @@ def test_full_capture_marks_audit_complete_for_e1(tmp_path):
     assert cov["accepted_sources_without_screenshots"] == []
     assert cov["audit_complete_for_e1_recording"] is True
     # The E1 artifact carries audit completeness SEPARATELY from the gates.
-    e1 = json.loads((rec.run_dir / "e1_review_gates.json").read_text())
+    e1 = json.loads((rec.run_dir / "e1_review_gates.json").read_text(encoding="utf-8"))
     assert e1["audit_completeness"]["audit_complete_for_e1_recording"] is True
     assert "gates" in e1  # gate validity remains its own dimension
 
@@ -301,7 +301,7 @@ def test_partial_capture_failure_marks_audit_incomplete_not_invalid(tmp_path):
     # The failed-capture source is audit-incomplete but its EVIDENCE stands:
     # still accepted, still in the ledger, phase still passed.
     entries = [json.loads(l) for l in
-               (rec.run_dir / "source_ledger.jsonl").read_text().splitlines() if l.strip()]
+               (rec.run_dir / "source_ledger.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     failed = [e for e in entries if e["url"].rstrip("/") == failing_url]
     assert failed and all(e["audit_status"] == "audit_incomplete" for e in failed)
     assert brief.phase_3_result.status.value == "PASS"
@@ -315,7 +315,7 @@ def test_exploding_capture_never_crashes_the_run(tmp_path):
     brief, rec = _run(tmp_path, screenshotter=FakeScreenshotCapture(explode=True))
     assert brief.review_verdict  # run completed
     shots = [json.loads(l) for l in
-             (rec.run_dir / "screenshots.jsonl").read_text().splitlines() if l.strip()]
+             (rec.run_dir / "screenshots.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     assert shots and all(not s["success"] for s in shots)
     assert all("capture raised unexpectedly" in (s["error_reason"] or "") for s in shots)
 
@@ -355,16 +355,16 @@ def test_coverage_governance_text_forbids_gate_use():
 def test_markdown_and_diagnostics_surface_screenshot_coverage(tmp_path):
     failing_url = "https://www.etsy.com/listing/price-1"
     _, rec = _run(tmp_path, screenshotter=FakeScreenshotCapture(fail_urls={failing_url}))
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     assert "## Screenshot Audit Coverage" in md
     assert "Audit complete for E1 recording:" in md
     assert "never satisfies a gate" in md
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     assert diag["screenshot_coverage"]["screenshots_failed"] >= 1
 
 
 def test_connector_registry_reports_fake_capture_available(tmp_path):
     _, rec = _run(tmp_path, screenshotter=FakeScreenshotCapture())
-    reg = json.loads((rec.run_dir / "connector_registry.json").read_text())
+    reg = json.loads((rec.run_dir / "connector_registry.json").read_text(encoding="utf-8"))
     by_name = {c["name"]: c for c in reg["connectors"]}
     assert by_name["screenshot_capture"]["status"] == "available"

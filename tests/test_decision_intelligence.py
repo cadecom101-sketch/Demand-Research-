@@ -203,7 +203,7 @@ def test_generic_satisfaction_quotes_do_not_satisfy_phase2(tmp_path):
     assert brief.phase_2_result.sources_collected == []
     # Rejected for the right, explicit reason.
     rejected = [json.loads(l) for l in
-                (rec.run_dir / "rejected_sources.jsonl").read_text().splitlines() if l.strip()]
+                (rec.run_dir / "rejected_sources.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     assert any(r["rejection_reason"] == "generic_satisfaction_not_pain" for r in rejected)
     # Fails closed: never approved, B3 LOCKED, never RECORDED.
     assert brief.decision != Decision.BUILD
@@ -230,7 +230,7 @@ def test_next_evidence_plan_written_for_parking_run(tmp_path):
     verdict = (brief.e1_review or {}).get("review_verdict")
     assert verdict in ("E1_PARK", "E1_REVISE_BEFORE_RECORDING")
 
-    plan = json.loads((rec.run_dir / "next_evidence_plan.json").read_text())
+    plan = json.loads((rec.run_dir / "next_evidence_plan.json").read_text(encoding="utf-8"))
     assert plan["applies"] is True
     assert plan["product_name"] == _hypothesis().product_name  # no rename
     assert plan["primary_blocker"]
@@ -242,7 +242,7 @@ def test_next_evidence_plan_written_for_parking_run(tmp_path):
     assert first["would_satisfy_source_types"]
     assert first["would_not_count"]
     # Markdown plan was rendered and is non-empty.
-    md = (rec.run_dir / "next_evidence_plan.md").read_text()
+    md = (rec.run_dir / "next_evidence_plan.md").read_text(encoding="utf-8")
     assert "Next Evidence Plan" in md and "`" in md
 
 
@@ -262,7 +262,7 @@ def test_decision_diagnostics_distinguish_missing_vs_tooling(tmp_path):
     rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=_fake_researcher(sources_by_call, _GAP))
     asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     # Clean run with empty Phase 2 = genuinely missing evidence, not a tool error.
     assert diag["failure_mode"] == "evidence_missing"
     assert diag["phases"] and any("buyer_language_captured" in p["supports_e1_gates"]

@@ -240,7 +240,7 @@ def test_salvage_integration_preserves_evidence_and_fails_closed(tmp_path):
 
     # Salvage was logged with counts + parser step.
     errors = [json.loads(l) for l in
-              (rec.run_dir / "extraction_errors.jsonl").read_text().splitlines() if l.strip()]
+              (rec.run_dir / "extraction_errors.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     salv = [e for e in errors if e["error_type"] == "recovered_via_source_object_salvage"]
     assert salv, "expected a salvage record"
     assert salv[0]["salvaged_source_objects"] == 4
@@ -296,6 +296,6 @@ def test_chunked_extraction_keeps_good_chunk_when_another_fails(tmp_path):
 
     # The failed chunk is logged with its chunk id; the good chunk is not an error.
     errors = [json.loads(l) for l in
-              (rec.run_dir / "extraction_errors.jsonl").read_text().splitlines() if l.strip()]
+              (rec.run_dir / "extraction_errors.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     assert any(e.get("chunk_id") in ("chunk_1", "chunk_2") for e in errors)
     assert rec.run_status == "partial"

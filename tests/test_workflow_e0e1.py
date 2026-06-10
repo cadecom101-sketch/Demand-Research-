@@ -26,7 +26,7 @@ import test_audit as t  # reuse fakes: _researcher, _hypothesis, _strong_sources
 
 
 def _read_jsonl(path):
-    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
 
 # 1 — fixed phase names, including "Price Band Mapping"
@@ -44,7 +44,7 @@ def test_brief_has_evidence_stage(tmp_path):
     orch = ResearchOrchestrator(researcher=t._researcher(t._strong_sources(), t._GAP))
     brief = asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
     assert isinstance(brief.evidence_stage, EvidenceStage)
-    assert json.loads((rec.run_dir / "demand_brief.json").read_text())["evidence_stage"] in {
+    assert json.loads((rec.run_dir / "demand_brief.json").read_text(encoding="utf-8"))["evidence_stage"] in {
         "E0_AUTHORED_CAPTURED", "E1_CANDIDATE", "E1_APPROVED_TO_RECORD", "E1_RECORDED"
     }
 
@@ -68,7 +68,7 @@ def test_structured_phase_artifacts_created(tmp_path):
     comp = _read_jsonl(rec.run_dir / "competitor_map.jsonl")
     assert len(price) >= 3 and all("price_observed" in r and "source_id" in r for r in price)
     assert len(comp) >= 3 and all("demand_validation_score" in r for r in comp)
-    mech = json.loads((rec.run_dir / "missing_mechanism_gap.json").read_text())
+    mech = json.loads((rec.run_dir / "missing_mechanism_gap.json").read_text(encoding="utf-8"))
     assert mech["status"] in {"supported", "partially_supported", "unsupported"}
     assert mech["supporting_source_ids"]  # linked to Phase 4 competitor sources
 
@@ -78,7 +78,7 @@ def test_markdown_has_workflow_sections(tmp_path):
     rec = RunRecorder(t._hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=t._researcher(t._strong_sources(), t._GAP))
     asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     assert "## Primitive / Member Hierarchy" in md
     assert "## Current State / Candidate State" in md
     assert "## E1 Review Verdict" in md
@@ -129,7 +129,7 @@ def test_aesthetic_gap_is_unsupported(tmp_path):
     rec = RunRecorder(t._hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=t._researcher(t._strong_sources(), aesthetic_gap))
     brief = asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
-    mech = json.loads((rec.run_dir / "missing_mechanism_gap.json").read_text())
+    mech = json.loads((rec.run_dir / "missing_mechanism_gap.json").read_text(encoding="utf-8"))
     assert mech["status"] == "unsupported"
     assert mech["is_structural"] is False
     assert brief.phase_5_result.status == PhaseStatus.FAIL
@@ -144,5 +144,5 @@ def test_json_artifacts_parse_cleanly(tmp_path):
     for name in ("run_manifest.json", "evidence_scorecard.json",
                  "demand_brief.json", "missing_mechanism_gap.json",
                  "e1_review_gates.json"):
-        with (rec.run_dir / name).open() as f:
+        with (rec.run_dir / name).open(encoding="utf-8") as f:
             assert isinstance(json.load(f), dict)

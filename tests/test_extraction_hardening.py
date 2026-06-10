@@ -178,21 +178,21 @@ def test_raw_artifacts_written_and_extraction_error_logged(tmp_path):
     assert (rec.run_dir / "raw_extraction_response_phase_1.txt").exists()
 
     # A. raw research text is the EXACT model output (not summarised/cleaned).
-    research_txt = (rec.run_dir / "raw_research_findings_phase_1.txt").read_text()
+    research_txt = (rec.run_dir / "raw_research_findings_phase_1.txt").read_text(encoding="utf-8")
     assert research_txt == "I found several real listings and reviews."
     # citation sidecar carries the real-looking URL the search surfaced.
     sidecar = json.loads(
-        (rec.run_dir / "raw_research_findings_phase_1.citations.json").read_text())
+        (rec.run_dir / "raw_research_findings_phase_1.citations.json").read_text(encoding="utf-8"))
     assert "https://etsy-like.test/listing/1" in sidecar["citations"]
 
     # B. raw extraction response is captured verbatim even though parsing failed.
-    extraction_txt = (rec.run_dir / "raw_extraction_response_phase_1.txt").read_text()
+    extraction_txt = (rec.run_dir / "raw_extraction_response_phase_1.txt").read_text(encoding="utf-8")
     assert extraction_txt == "I think there is demand here but I will not format JSON."
 
     # C. the failed parse is logged to extraction_errors.jsonl with required fields.
     errors = [
         json.loads(line)
-        for line in (rec.run_dir / "extraction_errors.jsonl").read_text().splitlines()
+        for line in (rec.run_dir / "extraction_errors.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     assert errors, "expected an extraction error to be logged"
@@ -208,7 +208,7 @@ def test_raw_artifacts_written_and_extraction_error_logged(tmp_path):
 
     # F.7 / fail-closed: no parsed sources -> empty ledgers -> E1 parks, never BUILD.
     assert brief.phase_1_result.sources_collected == []
-    assert (rec.run_dir / "source_ledger.jsonl").read_text().strip() == ""
+    assert (rec.run_dir / "source_ledger.jsonl").read_text(encoding="utf-8").strip() == ""
     assert brief.decision != Decision.BUILD
     e1 = brief.e1_review or {}
     assert e1.get("review_verdict") != "E1_APPROVED_TO_RECORD"
@@ -230,6 +230,6 @@ def test_extraction_error_marks_run_partial_and_parks(tmp_path):
     assert brief.decision in (Decision.PARK, Decision.KILL)
     assert rec.run_status == "partial"
     # manifest reflects the partial, evidence-empty run.
-    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text())
+    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_status"] == "partial"
     assert manifest["validated_source_count"] == 0

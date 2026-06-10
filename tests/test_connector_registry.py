@@ -182,7 +182,7 @@ def _run_clean_workflow(tmp_path):
 
 def test_run_writes_connector_registry_artifact(tmp_path):
     brief, rec = _run_clean_workflow(tmp_path)
-    record = json.loads((rec.run_dir / "connector_registry.json").read_text())
+    record = json.loads((rec.run_dir / "connector_registry.json").read_text(encoding="utf-8"))
     assert record["run_id"] == rec.run_id
     assert record["checked_utc"]
     names = {c["name"] for c in record["connectors"]}
@@ -201,7 +201,7 @@ def test_run_writes_connector_registry_artifact(tmp_path):
 
 def test_markdown_brief_lists_evidence_connectors(tmp_path):
     _, rec = _run_clean_workflow(tmp_path)
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     assert "## Evidence Connectors" in md
     assert "anthropic_web_search" in md
     assert "never feeds a gate" in md

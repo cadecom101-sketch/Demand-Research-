@@ -118,7 +118,7 @@ _GAP = {"is_structural": True, "gap_statement": "Gates launch before motion.",
 def _read_jsonl(path):
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 # --------------------------------------------------------------------------- #
@@ -133,8 +133,8 @@ def test_run_folder_and_all_artifacts_exist(tmp_path):
     for name in ARTIFACT_FILES:
         assert (rec.run_dir / name).exists(), f"missing artifact: {name}"
     # Manifest + scorecard are valid JSON.
-    json.loads((rec.run_dir / "run_manifest.json").read_text())
-    json.loads((rec.run_dir / "evidence_scorecard.json").read_text())
+    json.loads((rec.run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    json.loads((rec.run_dir / "evidence_scorecard.json").read_text(encoding="utf-8"))
     assert brief.run_id == rec.run_id
 
 
@@ -142,7 +142,7 @@ def test_brief_includes_audit_sections(tmp_path):
     rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=_researcher(_strong_sources(), _GAP))
     asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     assert "Evidence Quality Score Breakdown" in md
     assert "Hard Gate Results" in md
     assert "Audit Artifacts" in md
@@ -209,7 +209,7 @@ def test_partial_run_forbids_build_and_marks_status(tmp_path):
     brief = asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
     assert brief.run_status == "partial"
     assert brief.decision != Decision.BUILD
-    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text())
+    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_status"] == "partial"
 
 
@@ -272,7 +272,7 @@ def test_hard_gate_overrides_explain_park(tmp_path):
     rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=_researcher(_grade_c_run(), _GAP))
     asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
-    sc = json.loads((rec.run_dir / "evidence_scorecard.json").read_text())
+    sc = json.loads((rec.run_dir / "evidence_scorecard.json").read_text(encoding="utf-8"))
     overrides = sc["hard_gate_overrides"]
     # The buyer-language / grade / phase-2 gates must explain PARK (not REVISE).
     assert overrides, "PARK case must record explanatory gate overrides"
@@ -291,7 +291,7 @@ def test_json_artifacts_parse_cleanly(tmp_path):
     orch = ResearchOrchestrator(researcher=_researcher(_strong_sources(), _GAP))
     asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
     for name in ("run_manifest.json", "evidence_scorecard.json", "demand_brief.json"):
-        with (rec.run_dir / name).open() as f:
+        with (rec.run_dir / name).open(encoding="utf-8") as f:
             payload = json.load(f)  # raises if invalid / truncated
         assert isinstance(payload, dict)
     # No leftover temp files from the atomic writes.
@@ -306,7 +306,7 @@ def test_strong_evidence_caps_build_to_test(tmp_path):
     # TEST (never BUILD). The internal score tier is recorded as TEST.
     assert brief.decision == Decision.TEST
     assert brief.decision != Decision.BUILD
-    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text())
+    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["final_decision"] == "TEST"
     assert manifest["validated_source_count"] >= 12
     assert manifest["rejected_source_count"] >= 1

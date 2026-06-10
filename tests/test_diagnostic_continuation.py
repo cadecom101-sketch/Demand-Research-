@@ -206,7 +206,7 @@ def test_clean_full_pass_has_no_diagnostic_phases(tmp_path):
                    brief.phase_4_result, brief.phase_5_result):
         assert result.status in (PhaseStatus.PASS, PhaseStatus.FAIL)
         assert result.diagnostic_reason is None
-    cont = json.loads((rec.run_dir / "diagnostic_continuation.json").read_text())
+    cont = json.loads((rec.run_dir / "diagnostic_continuation.json").read_text(encoding="utf-8"))
     assert cont == {}  # artifact exists, empty for a fully gating run
 
 
@@ -263,7 +263,7 @@ def test_decision_engine_diagnostic_gate_caps_verdict():
 def test_diagnostic_claims_cannot_be_supported(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
     claims = [json.loads(l) for l in
-              (rec.run_dir / "claim_ledger.jsonl").read_text().splitlines()
+              (rec.run_dir / "claim_ledger.jsonl").read_text(encoding="utf-8").splitlines()
               if l.strip()]
     by_type = {c["claim_type"]: c for c in claims}
     price = by_type["channel_viability"]
@@ -282,7 +282,7 @@ def test_diagnostic_claims_cannot_be_supported(tmp_path):
 def test_diagnostic_sources_preserved_in_source_ledger(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
     entries = [json.loads(l) for l in
-               (rec.run_dir / "source_ledger.jsonl").read_text().splitlines()
+               (rec.run_dir / "source_ledger.jsonl").read_text(encoding="utf-8").splitlines()
                if l.strip()]
     phase3 = [e for e in entries if e["phase_id"] == "phase_3"]
     phase4 = [e for e in entries if e["phase_id"] == "phase_4"]
@@ -296,7 +296,7 @@ def test_diagnostic_sources_preserved_in_source_ledger(tmp_path):
 def test_diagnostic_price_bands_written_and_marked(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
     records = [json.loads(l) for l in
-               (rec.run_dir / "price_band_artifacts.jsonl").read_text().splitlines()
+               (rec.run_dir / "price_band_artifacts.jsonl").read_text(encoding="utf-8").splitlines()
                if l.strip()]
     assert len(records) >= 3  # preserved, not discarded
     assert all(r["diagnostic_only"] is True for r in records)
@@ -306,7 +306,7 @@ def test_diagnostic_price_bands_written_and_marked(tmp_path):
 def test_diagnostic_competitor_map_written_and_marked(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
     records = [json.loads(l) for l in
-               (rec.run_dir / "competitor_map.jsonl").read_text().splitlines()
+               (rec.run_dir / "competitor_map.jsonl").read_text(encoding="utf-8").splitlines()
                if l.strip()]
     assert len(records) >= 3
     assert all(r["diagnostic_only"] is True for r in records)
@@ -314,14 +314,14 @@ def test_diagnostic_competitor_map_written_and_marked(tmp_path):
 
 def test_diagnostic_missing_mechanism_written_and_marked(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
-    mech = json.loads((rec.run_dir / "missing_mechanism_gap.json").read_text())
+    mech = json.loads((rec.run_dir / "missing_mechanism_gap.json").read_text(encoding="utf-8"))
     assert mech.get("diagnostic_only") is True
     assert mech.get("gap_statement")  # the gap content itself is preserved
 
 
 def test_diagnostic_continuation_artifact_schema(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
-    cont = json.loads((rec.run_dir / "diagnostic_continuation.json").read_text())
+    cont = json.loads((rec.run_dir / "diagnostic_continuation.json").read_text(encoding="utf-8"))
     assert cont["run_id"] == rec.run_id
     assert cont["timestamp_utc"]
     assert cont["triggered_by_phase"] == 2
@@ -337,7 +337,7 @@ def test_continuation_alone_does_not_mark_run_partial(tmp_path):
     # run even though phases 3-5 ran diagnostically.
     brief, rec = _run_phase2_clean_fail(tmp_path)
     assert brief.run_status == "success"
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     assert diag["run_partial"] is False
     assert diag["failure_mode"] == "evidence_missing"
 
@@ -347,7 +347,7 @@ def test_continuation_alone_does_not_mark_run_partial(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_diagnostics_carry_continuation_and_gate_bucket(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     assert diag["diagnostic_continuation"]["triggered_by_phase"] == 2
     by_phase = {p["phase"]: p for p in diag["phases"]}
     for n in (3, 4, 5):
@@ -361,7 +361,7 @@ def test_diagnostics_carry_continuation_and_gate_bucket(tmp_path):
 
 def test_belief_state_reports_diagnostic_phases_with_counts(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     belief = diag["belief_state"]
     pb = belief["price_band_observed"]
     assert pb["status"] == "diagnostic_only"
@@ -372,7 +372,7 @@ def test_belief_state_reports_diagnostic_phases_with_counts(tmp_path):
 
 def test_next_evidence_plan_says_collected_diagnostically(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
-    plan = json.loads((rec.run_dir / "next_evidence_plan.json").read_text())
+    plan = json.loads((rec.run_dir / "next_evidence_plan.json").read_text(encoding="utf-8"))
     targets = {t["gate"]: t for t in plan["next_evidence_targets"]}
     assert targets["observed_price_band"]["evidence_state"] == "collected_diagnostically"
     assert "re-validate" in targets["observed_price_band"]["reason"]
@@ -382,7 +382,7 @@ def test_next_evidence_plan_says_collected_diagnostically(tmp_path):
 
 def test_scorecard_notes_diagnostic_exclusion(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
-    scorecard = json.loads((rec.run_dir / "evidence_scorecard.json").read_text())
+    scorecard = json.loads((rec.run_dir / "evidence_scorecard.json").read_text(encoding="utf-8"))
     note = scorecard["diagnostic_continuation_note"]
     assert "diagnostic-only" in note
     assert "excluded" in note
@@ -390,7 +390,7 @@ def test_scorecard_notes_diagnostic_exclusion(tmp_path):
 
 def test_markdown_brief_reports_continuation_honestly(tmp_path):
     _, rec = _run_phase2_clean_fail(tmp_path)
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     assert "Diagnostic continuation" in md
     assert "DIAGNOSTIC_ONLY" in md
     assert "approval-eligible" in md  # explicitly says it cannot approve

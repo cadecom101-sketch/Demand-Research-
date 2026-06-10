@@ -262,7 +262,7 @@ def test_recorder_tracks_search_failures_by_phase(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_phase2_tool_failure_not_classified_as_clean_evidence_missing(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
 
     assert diag["failure_mode"] == "evidence_incomplete_due_to_tooling"
     assert diag["failure_mode"] != "evidence_missing"
@@ -278,7 +278,7 @@ def test_phase2_tool_failure_not_classified_as_clean_evidence_missing(tmp_path):
 
 def test_tool_failed_gates_separated_from_clean_gates(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     # buyer_language_captured is fed by tool-failed Phase 2 -> not fully evaluable.
     assert "buyer_language_captured" in diag["gates_not_fully_evaluable_due_to_tooling"]
     assert "buyer_language_captured" not in diag["gates_unsupported_after_clean_search"]
@@ -299,7 +299,7 @@ def test_tool_failed_gates_separated_from_clean_gates(tmp_path):
 
 def test_uncertainty_types_in_diagnostics(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     types_found = diag["uncertainty_types"]
     assert "outcome_uncertainty" in types_found
     assert "state_uncertainty" in types_found        # market not fully observed
@@ -309,14 +309,14 @@ def test_uncertainty_types_in_diagnostics(tmp_path):
 
 def test_clean_missing_run_stays_clean_evidence_missing(tmp_path):
     _, rec = _run_clean_missing_workflow(tmp_path)
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     assert diag["failure_mode"] == "evidence_missing"
     assert diag["run_partial"] is False
     assert diag["not_a_market_conclusion"] is False
     assert diag["tool_failures"] == []
     assert "interaction_uncertainty" not in diag["uncertainty_types"]
     # No tool-failure artifact rows for a clean run.
-    assert (rec.run_dir / "research_tool_failures.jsonl").read_text().strip() == ""
+    assert (rec.run_dir / "research_tool_failures.jsonl").read_text(encoding="utf-8").strip() == ""
 
 
 # --------------------------------------------------------------------------- #
@@ -325,7 +325,7 @@ def test_clean_missing_run_stays_clean_evidence_missing(tmp_path):
 def test_tool_failure_writes_audit_artifact(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
     lines = [json.loads(l) for l in
-             (rec.run_dir / "research_tool_failures.jsonl").read_text().splitlines()
+             (rec.run_dir / "research_tool_failures.jsonl").read_text(encoding="utf-8").splitlines()
              if l.strip()]
     assert len(lines) == 1
     record = lines[0]
@@ -349,7 +349,7 @@ def test_tool_failure_writes_audit_artifact(tmp_path):
 
 def test_raw_research_artifact_preserved_verbatim(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
-    raw = (rec.run_dir / "raw_research_findings_phase_2.txt").read_text()
+    raw = (rec.run_dir / "raw_research_findings_phase_2.txt").read_text(encoding="utf-8")
     assert raw == _PHASE2_FAILURE_TEXT  # byte-for-byte, never rewritten
 
 
@@ -366,7 +366,7 @@ def test_tool_failed_run_remains_fail_closed(tmp_path):
     assert e1.get("b3_status") == "LOCKED"
     assert e1.get("recording_status") != "RECORDED"
     assert e1.get("public_execution_status") == "NONE"
-    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text())
+    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_status"] == "partial"
 
 
@@ -382,7 +382,7 @@ def test_clean_full_chain_can_still_reach_approval(tmp_path):
     rec = RunRecorder(_hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=_fake_researcher(sources_by_call, _GAP))
     brief = asyncio.run(orch.run_workflow(_hypothesis(), recorder=rec))
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     assert diag["run_partial"] is False
     assert diag["tool_failures"] == []
     assert diag["failure_mode"] in ("none", "evidence_missing")
@@ -398,7 +398,7 @@ def test_clean_full_chain_can_still_reach_approval(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_belief_state_distinguishes_observation_states(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     belief = diag["belief_state"]
 
     assert belief["category_exists"]["status"] == "supported"
@@ -419,7 +419,7 @@ def test_belief_state_distinguishes_observation_states(tmp_path):
 
 def test_belief_state_clean_run_uses_unsupported_after_clean_search(tmp_path):
     _, rec = _run_clean_missing_workflow(tmp_path)
-    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text())
+    diag = json.loads((rec.run_dir / "decision_diagnostics.json").read_text(encoding="utf-8"))
     bp = diag["belief_state"]["buyer_pain_articulated"]
     assert bp["status"] == "unsupported_after_clean_search"
     assert "genuine" in bp["reason"].lower()
@@ -472,7 +472,7 @@ def test_classify_uncertainty_unit():
 # --------------------------------------------------------------------------- #
 def test_voi_plan_ranks_buyer_language_critical_and_flags_tooling(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
-    plan = json.loads((rec.run_dir / "next_evidence_plan.json").read_text())
+    plan = json.loads((rec.run_dir / "next_evidence_plan.json").read_text(encoding="utf-8"))
     assert plan["applies"] is True
     targets = {t["gate"]: t for t in plan["next_evidence_targets"]}
 
@@ -491,7 +491,7 @@ def test_voi_plan_ranks_buyer_language_critical_and_flags_tooling(tmp_path):
 
 def test_voi_plan_clean_run_says_missing_after_clean_search(tmp_path):
     _, rec = _run_clean_missing_workflow(tmp_path)
-    plan = json.loads((rec.run_dir / "next_evidence_plan.json").read_text())
+    plan = json.loads((rec.run_dir / "next_evidence_plan.json").read_text(encoding="utf-8"))
     targets = {t["gate"]: t for t in plan["next_evidence_targets"]}
     assert targets["buyer_language_captured"]["evidence_state"] == "missing_after_clean_search"
     # The plan guides collection; it never claims to be evidence itself.
@@ -506,7 +506,7 @@ def test_voi_plan_clean_run_says_missing_after_clean_search(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_scorecard_partial_clarity_for_tool_failed_run(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
-    scorecard = json.loads((rec.run_dir / "evidence_scorecard.json").read_text())
+    scorecard = json.loads((rec.run_dir / "evidence_scorecard.json").read_text(encoding="utf-8"))
     assert scorecard["clean_vs_partial"] == "partial_tool_failure"
     assert "not a clean market score" in scorecard["partial_run_caps"].lower()
     assert "PARK" in scorecard["partial_run_caps"]
@@ -516,7 +516,7 @@ def test_scorecard_partial_clarity_for_tool_failed_run(tmp_path):
 
 def test_scorecard_clean_run_labeled_clean(tmp_path):
     _, rec = _run_clean_missing_workflow(tmp_path)
-    scorecard = json.loads((rec.run_dir / "evidence_scorecard.json").read_text())
+    scorecard = json.loads((rec.run_dir / "evidence_scorecard.json").read_text(encoding="utf-8"))
     assert scorecard["clean_vs_partial"] == "clean"
     assert scorecard.get("partial_run_caps") is None
     assert "score" in scorecard["score_meaning"].lower()
@@ -527,7 +527,7 @@ def test_scorecard_clean_run_labeled_clean(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_markdown_brief_reports_tool_failure_honestly(tmp_path):
     _, rec = _run_tool_failed_workflow(tmp_path)
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     assert "evidence_incomplete_due_to_tooling" in md
     assert "NOT a market conclusion" in md
     assert "partial_tool_failure" in md
@@ -617,7 +617,7 @@ def test_phase2_rejects_generic_negative_reviews_durably(tmp_path):
     assert brief.phase_2_result.status == PhaseStatus.FAIL
     assert brief.phase_2_result.sources_collected == []
     rejected = [json.loads(l) for l in
-                (rec.run_dir / "rejected_sources.jsonl").read_text().splitlines()
+                (rec.run_dir / "rejected_sources.jsonl").read_text(encoding="utf-8").splitlines()
                 if l.strip()]
     negative_rejections = [r for r in rejected
                            if r["rejection_reason"] == "generic_negative_not_target_pain"]
