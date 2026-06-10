@@ -263,6 +263,7 @@ OBSERVATION_STATUSES = (
     "not_observed",
     "not_evaluable",
     "partial_tool_failure",
+    "diagnostic_only",
 )
 
 
@@ -281,6 +282,7 @@ def build_belief_state(
     e1_artifact: dict,
     signals: dict,
     tool_failures: List[dict],
+    diagnostic_phases: Optional[set] = None,
 ) -> dict:
     """Build the per-gate belief state from what was actually observed.
 
@@ -292,10 +294,17 @@ def build_belief_state(
         absence of evidence is NOT a market conclusion;
       - not_observed: the phase did not run;
       - not_evaluable: the gate's inputs (buyer language / competitors) are
-        themselves missing or partial, so it cannot be assessed either way.
+        themselves missing or partial, so it cannot be assessed either way;
+      - diagnostic_only: the phase ran in diagnostic continuation after an
+        earlier hard-gate failure — its evidence is recorded for future cycles
+        but cannot satisfy this gate in this run.
     """
+    diagnostic_phases = diagnostic_phases or set()
     gate_status = {g.get("gate_id"): g.get("status") for g in e1_artifact.get("gates", [])}
     phases_ran = {p.phase_number for p in phase_results}
+    sources_by_phase = {
+        p.phase_number: len(p.sources_collected) for p in phase_results
+    }
     tool_failed_phases = {f["phase"] for f in tool_failures}
 
     belief: dict = {}
@@ -343,6 +352,18 @@ def build_belief_state(
                 "reason": (
                     "Insufficient buyer-language and/or competitor evidence: the gap "
                     "can only be evaluated against observed alternatives and pain."
+                ),
+            }
+        elif phase_num in diagnostic_phases:
+            observed = int(sources_by_phase.get(phase_num, 0))
+            entry = {
+                "status": "diagnostic_only",
+                "confidence": None,
+                "evidence_count": observed,
+                "reason": (
+                    f"Phase {phase_num} ran in diagnostic-only continuation after an "
+                    f"earlier hard-gate failure; {observed} source(s) were recorded "
+                    "for future cycles but cannot satisfy this gate in this run."
                 ),
             }
         elif not ran:

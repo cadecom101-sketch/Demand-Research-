@@ -282,14 +282,19 @@ def test_tool_failed_gates_separated_from_clean_gates(tmp_path):
     # buyer_language_captured is fed by tool-failed Phase 2 -> not fully evaluable.
     assert "buyer_language_captured" in diag["gates_not_fully_evaluable_due_to_tooling"]
     assert "buyer_language_captured" not in diag["gates_unsupported_after_clean_search"]
-    # Phase entries carry observation states; phases 3-5 are listed as not run.
+    # Phase entries carry observation states; phases 3-5 now run in
+    # diagnostic-only continuation instead of being skipped — their evidence is
+    # collected for future cycles but never satisfies a gate in this run.
     by_phase = {p["phase"]: p for p in diag["phases"]}
     assert by_phase[2]["observation_state"] == "partial_tool_failure"
     assert by_phase[1]["observation_state"] == "accepted"
     for n in (3, 4, 5):
-        assert by_phase[n]["status"] == "NOT_RUN"
-        assert by_phase[n]["observation_state"] == "not_observed"
-    assert diag["phases_not_run"] == [3, 4, 5]
+        assert by_phase[n]["status"] == "DIAGNOSTIC_ONLY"
+        assert by_phase[n]["observation_state"] == "diagnostic_only"
+    assert diag["phases_not_run"] == []
+    cont = diag["diagnostic_continuation"]
+    assert cont["triggered_by_phase"] == 2
+    assert cont["diagnostic_phases"] == [3, 4, 5]
 
 
 def test_uncertainty_types_in_diagnostics(tmp_path):
@@ -405,8 +410,10 @@ def test_belief_state_distinguishes_observation_states(tmp_path):
     assert bp["confidence"] is None
     assert "not a market conclusion" in bp["reason"].lower()
 
-    assert belief["price_band_observed"]["status"] == "not_observed"
-    assert belief["competitor_presence"]["status"] == "not_observed"
+    # Phases 3/4 now run in diagnostic continuation: their observation status
+    # says so explicitly instead of claiming they were never observed.
+    assert belief["price_band_observed"]["status"] == "diagnostic_only"
+    assert belief["competitor_presence"]["status"] == "diagnostic_only"
     assert belief["missing_mechanism_gap"]["status"] == "not_evaluable"
 
 
@@ -475,9 +482,10 @@ def test_voi_plan_ranks_buyer_language_critical_and_flags_tooling(tmp_path):
     assert "negative reviews" in bl["best_source_types"]
     assert "low-star reviews" in bl["best_source_types"]
 
-    # Gates fed only by never-run phases are 'not_observed', not 'missing'.
+    # Gates fed only by diagnostic-continuation phases are
+    # 'collected_diagnostically', never 'missing_after_clean_search'.
     if "observed_price_band" in targets:
-        assert targets["observed_price_band"]["evidence_state"] == "not_observed"
+        assert targets["observed_price_band"]["evidence_state"] == "collected_diagnostically"
         assert targets["observed_price_band"]["value_of_information"] == "high"
 
 

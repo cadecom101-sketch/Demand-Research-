@@ -48,6 +48,7 @@ ARTIFACT_FILES = [
     "e1_review_gates.json",
     "extraction_errors.jsonl",
     "research_tool_failures.jsonl",
+    "diagnostic_continuation.json",
     "search_plan.json",
     "decision_diagnostics.json",
     "next_evidence_plan.json",
@@ -61,6 +62,7 @@ _EMPTY_JSON_ARTIFACTS = {
     "run_manifest.json", "evidence_scorecard.json",
     "missing_mechanism_gap.json", "e1_review_gates.json", "demand_brief.json",
     "search_plan.json", "decision_diagnostics.json", "next_evidence_plan.json",
+    "diagnostic_continuation.json",
 }
 
 
@@ -138,6 +140,7 @@ class RunRecorder:
         # consumed by the research/tool-failure detector.
         self._search_failures_by_phase: dict = {}
         self._research_tool_failures: List[dict] = []
+        self._diagnostic_continuation: dict = {}
         self._rejected_by_reason: Counter = Counter()
         self._rejected_examples: List[dict] = []
         self._buyer_artifacts: List[dict] = []
@@ -483,6 +486,29 @@ class RunRecorder:
             "NOT a market conclusion; run marked partial (fail-closed)."
         )
 
+    def write_diagnostic_continuation(self, record: dict) -> None:
+        """Durably record a diagnostic continuation decision.
+
+        Later phases ran AFTER an earlier hard-gate phase failed; their evidence
+        is recorded in the normal artifact files (marked diagnostic_only) for
+        future cycles but is excluded from every gate, claim, score, and the E1
+        review of this run. Continuation does NOT mark the run partial — it is
+        a deliberate evidence-collection decision, not an observation failure.
+        """
+        stamped = {
+            "run_id": self.run_id,
+            "timestamp_utc": _utc_now_iso(),
+            **record,
+        }
+        self._diagnostic_continuation = stamped
+        self._write_json("diagnostic_continuation.json", stamped)
+        self.add_note(
+            f"Diagnostic continuation: phases {record.get('diagnostic_phases', [])} ran "
+            f"diagnostic-only after phase {record.get('triggered_by_phase')} failed; "
+            "their evidence is recorded for future cycles and never satisfies a gate "
+            "or raises the verdict in this run (fail-closed)."
+        )
+
     @property
     def research_tool_failure_count(self) -> int:
         """Number of phases with a detected research/tool failure this run."""
@@ -535,7 +561,8 @@ class RunRecorder:
                       "decision_thresholds", "hard_gate_overrides",
                       "score_meaning", "hard_gate_caps", "partial_run_caps",
                       "why_score_does_not_approve",
-                      "evidence_not_observed_due_to_tooling", "clean_vs_partial")
+                      "evidence_not_observed_due_to_tooling", "clean_vs_partial",
+                      "diagnostic_continuation_note")
             if scorecard_dict.get(k) is not None
         })
         self._write_json("evidence_scorecard.json", scorecard.model_dump(mode="json"))
@@ -547,6 +574,8 @@ class RunRecorder:
         bundle["search_summary"] = self.search_summary()
         bundle["rejected_summary"] = self.rejected_summary()
         bundle["research_tool_failures"] = self._research_tool_failures
+        if self._diagnostic_continuation:
+            bundle.setdefault("diagnostic_continuation", self._diagnostic_continuation)
         bundle["buyer_artifacts"] = self._buyer_artifacts
         bundle["price_bands"] = self._price_bands
         bundle["competitors"] = self._competitors

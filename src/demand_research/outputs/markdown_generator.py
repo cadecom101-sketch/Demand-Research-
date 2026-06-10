@@ -310,6 +310,17 @@ class _Renderer:
                 f"{tf.get('failure_severity', 'unknown')}; detected via "
                 f"{', '.join(tf.get('detection_sources', []))}."
             )
+        cont = diag.get("diagnostic_continuation") or {}
+        if cont:
+            L.append(
+                f"- **Diagnostic continuation:** Phase {cont.get('triggered_by_phase')} "
+                f"({cont.get('triggered_by_phase_name', '')}) failed first; phases "
+                f"{cont.get('diagnostic_phases', [])} still ran in DIAGNOSTIC-ONLY mode. "
+                "Their evidence is recorded in the artifacts for future cycles but is "
+                "excluded from every gate, claim, score, and the E1 review of this run "
+                "— it can never override the failed hard gate or make this run "
+                "approval-eligible."
+            )
         if diag.get("uncertainty_types"):
             L.append("- **Uncertainty types:** "
                      + ", ".join(f"`{u}`" for u in diag["uncertainty_types"]))
@@ -325,6 +336,11 @@ class _Renderer:
         if clean_gates:
             L.append("- **Gates unsupported after clean search:** "
                      + ", ".join(f"`{g}`" for g in clean_gates))
+        diag_gates = diag.get("gates_evaluated_diagnostically", [])
+        if diag_gates:
+            L.append("- **Gates evaluated diagnostically only (evidence preserved, "
+                     "cannot pass this run):** "
+                     + ", ".join(f"`{g}`" for g in diag_gates))
         if diag.get("why_generic_not_enough"):
             L.append(f"- **Why generic evidence is not enough:** {diag['why_generic_not_enough']}")
         rej = diag.get("rejected_evidence", {}) or {}
@@ -525,9 +541,16 @@ class _Renderer:
                       self.brief.phase_5_result):
             if phase is None:
                 continue
-            mark = "✓" if phase.status == PhaseStatus.PASS else "✗"
+            if phase.status == PhaseStatus.PASS:
+                mark = "✓"
+            elif phase.status == PhaseStatus.DIAGNOSTIC_ONLY:
+                mark = "◇"
+            else:
+                mark = "✗"
             L.append(f"### {mark} Phase {phase.phase_number}: {phase.phase_name}")
             L.append(f"**Status:** {phase.status.value}")
+            if phase.diagnostic_reason:
+                L.append(f"**Diagnostic-only:** {phase.diagnostic_reason}")
             L.append(f"**Pass Condition:** {phase.pass_condition}")
             L.append("")
             L.append(f"**Findings:** {phase.findings}")

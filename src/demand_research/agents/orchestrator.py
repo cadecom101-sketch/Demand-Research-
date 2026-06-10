@@ -106,6 +106,38 @@ class ResearchOrchestrator:
 
         try:
             completed: List[PhaseResult] = []
+            # Diagnostic continuation: once a hard-gate phase (2/3/4) fails, the
+            # remaining phases still run, but every result they produce is
+            # downgraded to DIAGNOSTIC_ONLY — collected for future cycles, never
+            # able to satisfy a gate, feed the score, or raise the verdict.
+            # Phase 1 failure still stops the run: with no category signal at
+            # all there is nothing meaningful to observe downstream.
+            diagnostic_trigger: Optional[dict] = None
+
+            def _enter_diagnostic(failed: PhaseResult) -> None:
+                nonlocal diagnostic_trigger
+                if diagnostic_trigger is None:
+                    diagnostic_trigger = {
+                        "phase": failed.phase_number,
+                        "phase_name": failed.phase_name,
+                        "reason": failed.reason,
+                    }
+
+            def _maybe_diagnostic(result: PhaseResult) -> PhaseResult:
+                if diagnostic_trigger is None:
+                    return result
+                details = dict(result.details or {})
+                details["diagnostic_underlying_status"] = result.status.value
+                result.details = details
+                result.status = PhaseStatus.DIAGNOSTIC_ONLY
+                result.diagnostic_reason = (
+                    f"Phase {diagnostic_trigger['phase']} "
+                    f"({diagnostic_trigger['phase_name']}) failed first; this phase ran "
+                    "in diagnostic-only continuation. Its evidence is recorded for "
+                    "future cycles but cannot satisfy any gate or raise the verdict "
+                    "in this run."
+                )
+                return result
 
             phase1_result = await self.phase1.run(hypothesis, recorder=recorder)
             brief.phase_1_result = phase1_result
@@ -117,24 +149,33 @@ class ResearchOrchestrator:
             brief.phase_2_result = phase2_result
             completed.append(phase2_result)
             if phase2_result.status == PhaseStatus.FAIL:
-                return self._finalize(brief, hypothesis, completed, recorder)
+                _enter_diagnostic(phase2_result)
 
-            phase3_result = await self.phase3.run(hypothesis, phase2_result, recorder=recorder)
+            phase3_result = _maybe_diagnostic(
+                await self.phase3.run(hypothesis, phase2_result, recorder=recorder)
+            )
             brief.phase_3_result = phase3_result
             completed.append(phase3_result)
             if phase3_result.status == PhaseStatus.FAIL:
-                return self._finalize(brief, hypothesis, completed, recorder)
+                _enter_diagnostic(phase3_result)
 
-            phase4_result = await self.phase4.run(hypothesis, phase3_result, recorder=recorder)
+            phase4_result = _maybe_diagnostic(
+                await self.phase4.run(hypothesis, phase3_result, recorder=recorder)
+            )
             brief.phase_4_result = phase4_result
             completed.append(phase4_result)
             if phase4_result.status == PhaseStatus.FAIL:
-                return self._finalize(brief, hypothesis, completed, recorder)
+                _enter_diagnostic(phase4_result)
 
-            phase5_result = await self.phase5.run(hypothesis, phase4_result, recorder=recorder)
+            phase5_result = _maybe_diagnostic(
+                await self.phase5.run(hypothesis, phase4_result, recorder=recorder)
+            )
             brief.phase_5_result = phase5_result
             completed.append(phase5_result)
-            return self._finalize(brief, hypothesis, completed, recorder)
+            return self._finalize(
+                brief, hypothesis, completed, recorder,
+                diagnostic_trigger=diagnostic_trigger,
+            )
 
         except ResearchUnavailableError as exc:
             # Infrastructure failure — never a fake verdict. Record what we can.
@@ -151,12 +192,15 @@ class ResearchOrchestrator:
         hypothesis: ProductHypothesis,
         phase_results: List[PhaseResult],
         recorder: Optional[object],
+        diagnostic_trigger: Optional[dict] = None,
     ) -> DemandBrief:
         # Research/tool-failure detection FIRST: a phase whose raw research
         # reports a tool/search failure (or whose searches errored) marks the
         # run partial BEFORE run_status is read, so the existing `tool_failure`
         # hard gate caps the verdict at PARK. Detection only ever lowers — a
-        # tool failure is neither evidence for nor against demand.
+        # tool failure is neither evidence for nor against demand. Diagnostic
+        # phases are scanned too: a tool failure during diagnostic continuation
+        # still means the observation was incomplete.
         search_failures = (
             recorder.search_failures_by_phase() if recorder is not None else {}
         )
@@ -168,11 +212,47 @@ class ResearchOrchestrator:
         else:
             run_status = "partial" if tool_failures else "success"
 
-        phase_by_num = {p.phase_number: p for p in phase_results}
-        all_sources = brief.all_sources()
+        # Partition: gating phases (PASS/FAIL — they decide) vs diagnostic
+        # phases (DIAGNOSTIC_ONLY — recorded, never decide). Everything that
+        # feeds a gate, a claim, or the score sees GATING evidence only, so the
+        # verdict is identical to a run that stopped at the failed phase.
+        diagnostic_results = [
+            p for p in phase_results if p.status == PhaseStatus.DIAGNOSTIC_ONLY
+        ]
+        gating_results = [
+            p for p in phase_results if p.status != PhaseStatus.DIAGNOSTIC_ONLY
+        ]
+        diagnostic_phases = {p.phase_number for p in diagnostic_results}
+
+        phase_by_num = {p.phase_number: p for p in gating_results}
+        all_sources = [s for p in gating_results for s in p.sources_collected]
+
+        diagnostic_continuation: Optional[dict] = None
+        if diagnostic_trigger is not None:
+            diagnostic_continuation = {
+                "triggered_by_phase": diagnostic_trigger["phase"],
+                "triggered_by_phase_name": diagnostic_trigger["phase_name"],
+                "trigger_reason": diagnostic_trigger["reason"],
+                "diagnostic_phases": sorted(diagnostic_phases),
+                "diagnostic_source_counts": {
+                    f"phase_{p.phase_number}": len(p.sources_collected)
+                    for p in diagnostic_results
+                },
+                "governance": (
+                    "Diagnostic-only evidence is durably recorded for future cycles "
+                    "but is excluded from every gate, claim, score, and the E1 "
+                    "review in this run. The failed hard gate stands; the verdict "
+                    "is the same as if the run had stopped at the failed phase."
+                ),
+            }
+            if recorder is not None:
+                recorder.write_diagnostic_continuation(diagnostic_continuation)
 
         # Write the source ledger + buyer-language artifacts and get graded sources.
-        graded, phase_cards = self._build_graded_sources(brief, phase_results, recorder)
+        graded, phase_cards = self._build_graded_sources(
+            brief, phase_results, recorder, diagnostic_phases=diagnostic_phases
+        )
+        graded_gating = [g for g in graded if not g.get("diagnostic_only")]
 
         run_id = recorder.run_id if recorder is not None else "local"
 
@@ -180,13 +260,29 @@ class ResearchOrchestrator:
         # map, missing-mechanism gap — derived from the graded sources so they
         # link by source_id.
         price_bands, price_lead_count, directional = self._build_price_bands(
-            run_id, brief, phase_cards, recorder
+            run_id, brief, phase_cards, recorder, diagnostic_phases=diagnostic_phases
         )
-        competitors = self._build_competitor_map(run_id, brief, phase_cards, recorder)
-        missing_mechanism = self._build_missing_mechanism(run_id, brief, phase_cards, recorder)
+        competitors = self._build_competitor_map(
+            run_id, brief, phase_cards, recorder, diagnostic_phases=diagnostic_phases
+        )
+        missing_mechanism = self._build_missing_mechanism(
+            run_id, brief, phase_cards, recorder, diagnostic_phases=diagnostic_phases
+        )
+
+        # Gate/claim/score inputs: GATING evidence only. Diagnostic-only records
+        # stay in the artifacts (marked) but never reach a gate this run.
+        price_bands_gating = [r for r in price_bands if not r.get("diagnostic_only")]
+        directional_gating = [r for r in directional if not r.get("diagnostic_only")]
+        competitors_gating = [r for r in competitors if not r.get("diagnostic_only")]
+        missing_mechanism_gating = (
+            {} if 5 in diagnostic_phases else missing_mechanism
+        )
 
         signals = compute_signals(phase_by_num, run_status)
-        outcome = self.decision_engine.decide(hypothesis, phase_results, all_sources, signals)
+        if diagnostic_continuation is not None:
+            signals["diagnostic_trigger_phase"] = diagnostic_continuation["triggered_by_phase"]
+            signals["diagnostic_phase_numbers"] = diagnostic_continuation["diagnostic_phases"]
+        outcome = self.decision_engine.decide(hypothesis, gating_results, all_sources, signals)
 
         # BUILD is disabled in the E1 demand-brief workflow: a five-phase desk
         # research run can never justify BUILD. Cap it to TEST before it becomes
@@ -211,20 +307,22 @@ class ResearchOrchestrator:
         # The price-band claim is computed from verified price artifacts ONLY,
         # never from generic Phase 3 competitor-lead source cards.
         claims = build_claims(
-            run_id, brief, graded,
+            run_id, brief, graded_gating,
             min_count=self.decision_engine.min_sources_per_phase,
-            price_artifacts=price_bands,
+            price_artifacts=price_bands_gating,
             price_lead_count=price_lead_count,
-            directional=directional,
+            directional=directional_gating,
+            diagnostic_phases=diagnostic_phases,
         )
 
         # E1 review: nine recording-readiness gates -> verdict + recording/B2/B3
         # status. Approval is additionally coupled to the conservative TEST bar
         # so it can never be easier than the existing engine's TEST.
         e1 = evaluate_e1_review(
-            hypothesis=hypothesis, brief=brief, signals=signals, graded=graded,
-            price_bands=price_bands, directional=directional, competitors=competitors,
-            missing_mechanism=missing_mechanism, target_member=self._target_member,
+            hypothesis=hypothesis, brief=brief, signals=signals, graded=graded_gating,
+            price_bands=price_bands_gating, directional=directional_gating,
+            competitors=competitors_gating,
+            missing_mechanism=missing_mechanism_gating, target_member=self._target_member,
             decision_cleared_test=capped_decision in (Decision.TEST, Decision.BUILD),
         )
         brief.evidence_stage = e1.evidence_stage
@@ -244,7 +342,7 @@ class ResearchOrchestrator:
         )
 
         what_not_proves = _what_not_proves(claims)
-        if brief.phase_3_result is not None and len(price_bands) == 0:
+        if brief.phase_3_result is not None and len(price_bands_gating) == 0:
             what_not_proves += (
                 " Exact competitor price bands were not established "
                 f"(0 verified competitor prices captured; {price_lead_count} unpriced leads)."
@@ -264,6 +362,7 @@ class ResearchOrchestrator:
         belief_state = build_belief_state(
             phase_results=phase_results, e1_artifact=e1_artifact,
             signals=signals, tool_failures=tool_failures,
+            diagnostic_phases=diagnostic_phases,
         )
         diagnostics = build_decision_diagnostics(
             brief=brief, e1_artifact=e1_artifact, signals=signals,
@@ -271,11 +370,13 @@ class ResearchOrchestrator:
             run_status=run_status, extraction_error_count=extraction_errors,
             extraction_salvage_count=salvage_events,
             tool_failures=tool_failures, belief_state=belief_state,
+            diagnostic_continuation=diagnostic_continuation,
         )
         next_plan = build_next_evidence_plan(
             hypothesis=hypothesis, brief=brief, e1_artifact=e1_artifact, signals=signals,
             tool_failures=tool_failures,
             phases_not_run=diagnostics.get("phases_not_run", []),
+            diagnostic_phases=diagnostic_phases,
         )
         next_plan_md = render_next_evidence_markdown(next_plan)
 
@@ -303,6 +404,15 @@ class ResearchOrchestrator:
         tooling_starved_gates = diagnostics.get(
             "gates_not_fully_evaluable_due_to_tooling", []
         )
+        diagnostic_note = None
+        if diagnostic_continuation is not None:
+            diagnostic_note = (
+                f"Phases {diagnostic_continuation['diagnostic_phases']} ran in "
+                "diagnostic-only continuation after Phase "
+                f"{diagnostic_continuation['triggered_by_phase']} failed. Their "
+                "evidence is excluded from this score and from every gate; it is "
+                "recorded for future cycles only."
+            )
 
         audit_core = {
             "evidence_stage": brief.evidence_stage.value,
@@ -323,6 +433,7 @@ class ResearchOrchestrator:
                 ),
                 "evidence_not_observed_due_to_tooling": tooling_starved_gates,
                 "clean_vs_partial": clean_vs_partial,
+                "diagnostic_continuation_note": diagnostic_note,
             },
             "gates": [g.model_dump(mode="json") for g in outcome.gates],
             "fatal_gaps": outcome.fatal_gaps,
@@ -343,6 +454,7 @@ class ResearchOrchestrator:
             "search_plan": search_plan,
             "decision_diagnostics": diagnostics,
             "next_evidence_plan": next_plan,
+            "diagnostic_continuation": diagnostic_continuation,
         }
 
         if recorder is not None:
@@ -382,13 +494,17 @@ class ResearchOrchestrator:
         brief: DemandBrief,
         phase_results: List[PhaseResult],
         recorder: Optional[object],
+        diagnostic_phases: Optional[set] = None,
     ) -> tuple[List[dict], dict]:
         """Grade every validated source, write the ledger + buyer-language
         artifacts (when recording), and return (graded_index, phase_cards).
 
         `phase_cards` maps phase number -> [(source_id, SourceCard)] so the
         structured phase artifacts can link by source_id. Phase 5 is synthesis
-        and reuses Phase 4's sources, so it is not re-ledgered."""
+        and reuses Phase 4's sources, so it is not re-ledgered. Sources from
+        `diagnostic_phases` are ledgered with diagnostic_only=True — preserved
+        for future cycles, excluded from every gate/claim this run."""
+        diagnostic_phases = diagnostic_phases or set()
         graded: List[dict] = []
         phase_cards: dict[int, list] = {}
         counter = 0
@@ -397,6 +513,7 @@ class ResearchOrchestrator:
             if num == 5:
                 continue
             etype = PHASE_EVIDENCE_TYPE.get(num, "other")
+            is_diagnostic = num in diagnostic_phases
             phase_cards.setdefault(num, [])
             for card in phase.sources_collected:
                 counter += 1
@@ -418,6 +535,7 @@ class ResearchOrchestrator:
                         claim_supported=card.what_this_proves or "",
                         claim_not_supported=card.what_this_does_not_prove or "",
                         confidence=conf,
+                        diagnostic_only=is_diagnostic,
                     )
                     recorder.log_source(entry)
                     if card.is_direct_quote and card.buyer_language_captured:
@@ -433,19 +551,25 @@ class ResearchOrchestrator:
                 else:
                     sid = f"S{counter:03d}"
                 phase_cards[num].append((sid, card))
-                graded.append({"source_id": sid, "phase": num, "grade": grade, "evidence_type": etype})
+                graded.append({
+                    "source_id": sid, "phase": num, "grade": grade,
+                    "evidence_type": etype, "diagnostic_only": is_diagnostic,
+                })
         return graded, phase_cards
 
     # ------------------------------------------------------------------ #
     # Structured phase artifacts
     # ------------------------------------------------------------------ #
-    def _build_price_bands(self, run_id, brief, phase_cards, recorder):
+    def _build_price_bands(self, run_id, brief, phase_cards, recorder,
+                           diagnostic_phases: Optional[set] = None):
         """Return (verified_price_records, lead_count, directional_records).
 
         Only verified competitor prices are written to price_band_artifacts.jsonl.
         Competitor leads (no observed price) and general market-pricing articles
         (directional) are NOT written there and do NOT count as price artifacts.
+        Records from a diagnostic-only Phase 3 carry diagnostic_only=True.
         """
+        diagnostic = 3 in (diagnostic_phases or set())
         records: List[dict] = []
         directional: List[dict] = []
         lead_count = 0
@@ -469,6 +593,8 @@ class ResearchOrchestrator:
                 "screenshot_filename": card.screenshot_filename,
                 "price_tier": _tier_for(card.price_observed),
             }
+            if diagnostic:
+                record["diagnostic_only"] = True
             if kind == "directional":
                 record["directional"] = True
                 directional.append(record)
@@ -479,7 +605,9 @@ class ResearchOrchestrator:
                 recorder.log_price_band(record)
         return records, lead_count, directional
 
-    def _build_competitor_map(self, run_id, brief, phase_cards, recorder) -> List[dict]:
+    def _build_competitor_map(self, run_id, brief, phase_cards, recorder,
+                              diagnostic_phases: Optional[set] = None) -> List[dict]:
+        diagnostic = 4 in (diagnostic_phases or set())
         records: List[dict] = []
         if brief.phase_4_result is None:
             return records
@@ -504,12 +632,15 @@ class ResearchOrchestrator:
             }
             for dim in dims:
                 record[f"{dim}_score"] = teardown.get(dim, "unknown")
+            if diagnostic:
+                record["diagnostic_only"] = True
             records.append(record)
             if recorder is not None:
                 recorder.log_competitor(record)
         return records
 
-    def _build_missing_mechanism(self, run_id, brief, phase_cards, recorder) -> dict:
+    def _build_missing_mechanism(self, run_id, brief, phase_cards, recorder,
+                                 diagnostic_phases: Optional[set] = None) -> dict:
         if brief.phase_5_result is None:
             return {}
         mech = dict(brief.phase_5_result.details or {})
@@ -518,6 +649,8 @@ class ResearchOrchestrator:
         mech["supporting_source_ids"] = [sid for sid, _ in phase_cards.get(4, [])]
         mech.setdefault("status", "unsupported")
         mech.setdefault("gap_statement", brief.phase_5_result.findings)
+        if 5 in (diagnostic_phases or set()):
+            mech["diagnostic_only"] = True
         if recorder is not None:
             recorder.write_missing_mechanism(mech)
         return mech

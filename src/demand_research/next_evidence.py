@@ -108,6 +108,8 @@ def _phase_observation_state(p, tool_failed: bool) -> str:
     """Classify one completed phase's observation state (diagnostic only)."""
     if tool_failed:
         return "partial_tool_failure"
+    if p.status == PhaseStatus.DIAGNOSTIC_ONLY:
+        return "diagnostic_only"
     if p.status == PhaseStatus.PASS:
         return "accepted"
     if len(p.sources_collected) > 0:
@@ -127,6 +129,7 @@ def build_decision_diagnostics(
     extraction_salvage_count: int = 0,
     tool_failures: Optional[List[dict]] = None,
     belief_state: Optional[dict] = None,
+    diagnostic_continuation: Optional[dict] = None,
 ) -> dict:
     """Explain the verdict without changing it.
 
@@ -215,13 +218,19 @@ def build_decision_diagnostics(
             "tool/search failure."
         )
 
-    # Which failing gates were starved by tooling vs genuinely unsupported vs
-    # simply never observed.
+    # Which failing gates were starved by tooling vs evaluated only
+    # diagnostically vs genuinely unsupported vs simply never observed.
+    diagnostic_nums = set(
+        (diagnostic_continuation or {}).get("diagnostic_phases", [])
+    )
     gates_tooling, gates_clean, gates_not_observed = [], [], []
+    gates_diagnostic = []
     for gate in failing:
         feed = GATE_TO_PHASES.get(gate, [])
         if any(n in tool_failed_nums for n in feed):
             gates_tooling.append(gate)
+        elif feed and all(n in diagnostic_nums for n in feed):
+            gates_diagnostic.append(gate)
         elif feed and all(n in phases_not_run for n in feed):
             gates_not_observed.append(gate)
         else:
@@ -265,6 +274,8 @@ def build_decision_diagnostics(
         "gates_not_fully_evaluable_due_to_tooling": gates_tooling,
         "gates_unsupported_after_clean_search": gates_clean,
         "gates_not_observed": gates_not_observed,
+        "gates_evaluated_diagnostically": gates_diagnostic,
+        "diagnostic_continuation": diagnostic_continuation,
         "uncertainty_types": uncertainty_types,
         "belief_state": belief_state or {},
         "generic_evidence_only": generic_only,
@@ -368,24 +379,29 @@ def build_next_evidence_plan(
     signals: dict,
     tool_failures: Optional[List[dict]] = None,
     phases_not_run: Optional[List[int]] = None,
+    diagnostic_phases: Optional[set] = None,
 ) -> dict:
     """Produce a specific next-evidence plan for a PARK/REVISE verdict.
 
     Targets are ranked by value of information: which gate the evidence affects
     and how much resolving it could change the verdict. The plan also
     distinguishes *why* each gate is open — evidence genuinely missing after a
-    clean search vs incomplete because tooling failed vs never observed — so a
-    re-run knows whether to search differently or simply retry.
+    clean search vs incomplete because tooling failed vs never observed vs
+    collected only diagnostically — so a re-run knows whether to search
+    differently, simply retry, or re-validate already-collected evidence.
     """
     verdict = brief.review_verdict
     failing = _ordered_failing(_failing_e1_gates(e1_artifact))
     tool_failed_nums = {f["phase"] for f in (tool_failures or [])}
     not_run = set(phases_not_run or [])
+    diagnostic = set(diagnostic_phases or set())
 
     def _evidence_state(gate: str) -> str:
         feed = GATE_TO_PHASES.get(gate, [])
         if any(n in tool_failed_nums for n in feed):
             return "incomplete_due_to_tool_failure"
+        if feed and all(n in diagnostic for n in feed):
+            return "collected_diagnostically"
         if feed and all(n in not_run for n in feed):
             return "not_observed"
         return "missing_after_clean_search"
@@ -401,6 +417,13 @@ def build_next_evidence_plan(
                 " NOTE: this gate's research pass hit a tool/search failure, so the "
                 "evidence is INCOMPLETE, not proven absent — re-running the same "
                 "observation has high value before changing the search itself."
+            )
+        elif state == "collected_diagnostically":
+            reason += (
+                " NOTE: evidence for this gate was collected during diagnostic-only "
+                "continuation (an earlier hard gate failed first). It is preserved in "
+                "the artifacts; clear the earlier failed gate, then re-validate it in "
+                "a gating run — do not re-collect from scratch."
             )
         next_targets.append({
             "gate": gate,

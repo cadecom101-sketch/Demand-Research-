@@ -61,6 +61,10 @@ class SourceLedgerEntry(BaseModel):
     claim_supported: str = ""
     claim_not_supported: str = ""
     confidence: float = 0.0
+    # True when this source was collected during diagnostic-only continuation
+    # (after an earlier hard-gate phase failed). It is preserved for future
+    # cycles but can never satisfy a gate or claim in the run that wrote it.
+    diagnostic_only: bool = False
 
 
 class BuyerLanguageArtifact(BaseModel):
@@ -132,6 +136,9 @@ class EvidenceScorecard(BaseModel):
     why_score_does_not_approve: Optional[str] = None
     evidence_not_observed_due_to_tooling: List[str] = Field(default_factory=list)
     clean_vs_partial: str = "clean"
+    # Set when later phases ran in diagnostic-only continuation: their evidence
+    # is excluded from this score and from every gate (reporting only).
+    diagnostic_continuation_note: Optional[str] = None
 
 
 class GateResult(BaseModel):

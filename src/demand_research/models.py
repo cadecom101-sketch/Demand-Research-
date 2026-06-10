@@ -8,9 +8,16 @@ from pydantic import BaseModel, Field, HttpUrl
 
 
 class PhaseStatus(str, Enum):
-    """Enum for phase pass/fail status."""
+    """Enum for phase pass/fail status.
+
+    DIAGNOSTIC_ONLY marks a phase that ran in diagnostic continuation AFTER an
+    earlier hard-gate phase failed. Its evidence is collected, validated, and
+    durably recorded for future cycles, but it can never satisfy a gate, feed
+    the score, or raise the verdict in this run — the failed hard gate stands.
+    """
     PASS = "PASS"
     FAIL = "FAIL"
+    DIAGNOSTIC_ONLY = "DIAGNOSTIC_ONLY"
 
 
 # --------------------------------------------------------------------------- #
@@ -157,6 +164,9 @@ class PhaseResult(BaseModel):
     pass_condition: str
     # Phase-specific structured output (e.g. Phase 5 missing-mechanism gap).
     details: Optional[dict] = None
+    # Set when status is DIAGNOSTIC_ONLY: why this phase ran in diagnostic
+    # continuation (which earlier phase failed first).
+    diagnostic_reason: Optional[str] = None
 
 
 class DemandBrief(BaseModel):

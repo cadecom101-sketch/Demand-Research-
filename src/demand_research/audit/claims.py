@@ -38,13 +38,29 @@ def build_claims(
     price_artifacts: Optional[List[dict]] = None,
     price_lead_count: int = 0,
     directional: Optional[List[dict]] = None,
+    diagnostic_phases: Optional[set] = None,
 ) -> List[ClaimLedgerEntry]:
     """Construct the claim ledger for a brief.
 
     Buyer-pain claims require Grade B+, category claims accept Grade C, and the
     mechanism-gap claim requires an actual competitor comparison (Grade C
     competitor sources plus a passed Phase 5), never mere absence of evidence.
+
+    `graded` and `price_artifacts` must already exclude diagnostic-only
+    evidence; `diagnostic_phases` only annotates the affected claims' reasons so
+    the ledger states WHY that evidence cannot support the claim this run.
     """
+    diagnostic_phases = diagnostic_phases or set()
+
+    def _diag_note(phase: int) -> str:
+        if phase in diagnostic_phases:
+            return (
+                " Evidence from this phase was collected in diagnostic-only "
+                "continuation (an earlier hard gate failed first); it is recorded "
+                "for future cycles and cannot support this claim in this run."
+            )
+        return ""
+
     claims: List[ClaimLedgerEntry] = []
     n = 0
 
@@ -129,7 +145,7 @@ def build_claims(
             claim=f"A workable price band exists on {hyp.primary_channel} for this product.",
             claim_type="channel_viability", required_evidence_grade="C",
             supporting_source_ids=supporting, status=status, confidence=_confidence_for(status),
-            reason=reason,
+            reason=reason + _diag_note(3),
         ))
         # Weaker, separate directional-context claim — never the price-band claim.
         if directional:
@@ -156,7 +172,8 @@ def build_claims(
             claim="Enough real competitors exist to assess structural positioning.",
             claim_type="competitor_density", required_evidence_grade="C",
             supporting_source_ids=ids, status=status, confidence=_confidence_for(status),
-            reason=f"{len(ids)} competitors analysed structurally (need {min_count}).",
+            reason=f"{len(ids)} competitors analysed structurally (need {min_count})."
+                   + _diag_note(4),
         ))
 
     # 5. Mechanism gap — requires competitor comparison, not absence of evidence.
@@ -180,6 +197,7 @@ def build_claims(
                 "Gap is judged against observed competitor structures, not absence of evidence. "
                 f"Phase 5 {'passed' if p5_pass else 'did not pass'}; "
                 f"{len(competitor_ids)} competitor structures available for comparison."
+                + _diag_note(5)
             ),
         ))
 
