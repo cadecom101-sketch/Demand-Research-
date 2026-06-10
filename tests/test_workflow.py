@@ -170,9 +170,12 @@ def test_markdown_output_renders(tmp_path):
     path.unlink()  # clean up generated artifact
 
 
-def test_missing_credentials_raise_research_unavailable():
+def test_missing_credentials_raise_research_unavailable(monkeypatch):
     # No client and no API key -> the lazy client construction must raise a
     # clear ResearchUnavailableError, never a fabricated verdict.
+    # Isolate this test from a developer shell that may have a live API key set.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     researcher = ClaudeResearcher(client=None)
     with pytest.raises(ResearchUnavailableError):
         researcher.research("hi", system="s")
