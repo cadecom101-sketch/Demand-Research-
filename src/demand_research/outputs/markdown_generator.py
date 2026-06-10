@@ -295,10 +295,36 @@ class _Renderer:
         L = ["## Decision Diagnostics", ""]
         L.append(f"- **Failure mode:** `{diag.get('failure_mode', 'n/a')}` — "
                  f"{diag.get('failure_mode_note', '')}")
+        if diag.get("run_partial"):
+            L.append("- **Run status:** PARTIAL — observation of the market was "
+                     "incomplete; this run cannot be certified as a clean observation.")
+        if diag.get("not_a_market_conclusion"):
+            L.append("- **NOT a market conclusion:** evidence shortfalls in the affected "
+                     "phase(s) reflect tooling/observation failure, not researched "
+                     "absence of demand.")
+        for tf in diag.get("tool_failures", []) or []:
+            L.append(
+                f"- **Tool/search failure:** Phase {tf.get('phase')} "
+                f"({tf.get('phase_name', '')}) — "
+                f"{'/'.join(tf.get('failure_types', []))}; severity "
+                f"{tf.get('failure_severity', 'unknown')}; detected via "
+                f"{', '.join(tf.get('detection_sources', []))}."
+            )
+        if diag.get("uncertainty_types"):
+            L.append("- **Uncertainty types:** "
+                     + ", ".join(f"`{u}`" for u in diag["uncertainty_types"]))
         failing = diag.get("failing_e1_gates", [])
         if failing:
             L.append(f"- **Failing E1 gates (priority order):** "
                      + ", ".join(f"`{g}`" for g in failing))
+        tooling_gates = diag.get("gates_not_fully_evaluable_due_to_tooling", [])
+        if tooling_gates:
+            L.append("- **Gates not fully evaluable due to tooling:** "
+                     + ", ".join(f"`{g}`" for g in tooling_gates))
+        clean_gates = diag.get("gates_unsupported_after_clean_search", [])
+        if clean_gates:
+            L.append("- **Gates unsupported after clean search:** "
+                     + ", ".join(f"`{g}`" for g in clean_gates))
         if diag.get("why_generic_not_enough"):
             L.append(f"- **Why generic evidence is not enough:** {diag['why_generic_not_enough']}")
         rej = diag.get("rejected_evidence", {}) or {}
@@ -306,15 +332,30 @@ class _Renderer:
             by_reason = ", ".join(f"{k}={v}" for k, v in (rej.get("by_reason") or {}).items())
             L.append(f"- **Rejected evidence:** {rej.get('total')} ({by_reason})")
         L.append("")
-        L.append("| Phase | Status | Accepted | Supports E1 gate(s) |")
-        L.append("| ----- | ------ | -------- | ------------------- |")
+        L.append("| Phase | Status | Observation state | Accepted | Supports E1 gate(s) |")
+        L.append("| ----- | ------ | ----------------- | -------- | ------------------- |")
         for p in diag.get("phases", []):
             L.append(
                 f"| {p.get('phase')} {p.get('name','')} | {p.get('status','')} | "
+                f"{p.get('observation_state', '—')} | "
                 f"{p.get('accepted_source_count', 0)} | "
                 f"{', '.join(p.get('supports_e1_gates', [])) or '—'} |"
             )
         L.append("")
+        belief = diag.get("belief_state") or {}
+        if belief:
+            L.append("### Belief State (per-gate observation status)")
+            L.append("")
+            L.append("| Belief | Status | Confidence | Evidence | Reason |")
+            L.append("| ------ | ------ | ---------- | -------- | ------ |")
+            for key, entry in belief.items():
+                conf = entry.get("confidence")
+                L.append(
+                    f"| `{key}` | {entry.get('status', '')} | "
+                    f"{conf if conf is not None else '—'} | "
+                    f"{entry.get('evidence_count', 0)} | {entry.get('reason', '')} |"
+                )
+            L.append("")
         return L
 
     def _next_evidence_plan(self) -> list[str]:

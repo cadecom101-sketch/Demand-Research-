@@ -174,10 +174,69 @@ class EvidenceValidator:
         "how do i", "how do you", "what do you use", "don't know what",
     )
 
+    # Generic product-dissatisfaction phrases (broken file, rude seller, price,
+    # aesthetics, vague dislike). A negative review made ONLY of these proves
+    # dissatisfaction with a product, not the target buyer pain (deciding what
+    # to make / validating demand before spending build time). Such quotes are
+    # rejected durably — unless the exact quote also connects to the target job
+    # (TARGET_JOB_MARKERS below). Stricter filter only: it can only reduce
+    # accepted buyer language, never weaken any gate.
+    GENERIC_NEGATIVE_MARKERS = (
+        "bad download", "didn't open", "did not open", "won't open",
+        "didn't work", "did not work", "doesn't work", "does not work",
+        "stopped working", "seller was rude", "rude seller", "too expensive",
+        "overpriced", "ugly", "not enough pages", "hard to use",
+        "didn't like it", "did not like it", "don't like it", "poor quality",
+        "low quality", "not worth it", "waste of money", "instructions unclear",
+        "unclear instructions", "template broke", "couldn't access",
+        "could not access", "can't access", "cannot access", "refund",
+    )
+
+    # Target-job/pain phrases for THIS primitive: deciding what digital product
+    # to make, validating demand before build time, and the no-sales-after-
+    # building pain. A negative review whose exact quote contains one of these
+    # connects to the target job and may count as buyer-language evidence.
+    TARGET_JOB_MARKERS = (
+        "what to make", "what to build", "what to create", "what to sell",
+        "what product", "which product", "what would sell", "what will sell",
+        "what sells", "what customers want", "what buyers want",
+        "no sales", "not selling", "zero sales", "nobody bought", "no one bought",
+        "didn't sell", "did not sell", "doesn't sell", "never sold",
+        "validate", "validation", "idea scoring", "product research",
+        "decide what", "deciding what", "decide which", "help me decide",
+        "too many ideas", "too many product ideas", "left me guessing",
+        "still guessing", "before building", "before investing", "before i build",
+        "build time", "spent hours making", "spent hours building",
+        "wasted hours", "hours building", "hours making",
+        "demand validation", "build or kill", "build-or-kill", "build/no-build",
+    )
+
     def proves_target_pain(self, quote: str) -> bool:
         """True if the quote articulates an unmet need / pain (not just praise)."""
         low = (quote or "").lower()
         return any(marker in low for marker in self.PAIN_SIGNAL_MARKERS)
+
+    def connects_to_target_job(self, quote: str) -> bool:
+        """True if the exact quote ties to the target buyer job/pain themes."""
+        low = (quote or "").lower()
+        return any(marker in low for marker in self.TARGET_JOB_MARKERS)
+
+    def is_generic_negative_review(self, quote: str) -> bool:
+        """True if the quote is generic dissatisfaction unrelated to the target job.
+
+        Negative does not automatically mean useful: "bad download", "seller was
+        rude", or "too expensive" prove product dissatisfaction, not the target
+        buyer pain. Such quotes are rejected to the durable rejected-source log
+        (still useful audit evidence — they show the system did not cherry-pick).
+        A negative review is kept when its exact words connect to the target job
+        ("didn't help me know what product to make", "still got no sales").
+        """
+        low = (quote or "").strip().lower()
+        if not low:
+            return False
+        if self.connects_to_target_job(low):
+            return False  # negative AND on-target — genuine buyer-pain candidate
+        return any(marker in low for marker in self.GENERIC_NEGATIVE_MARKERS)
 
     def is_generic_satisfaction_quote(self, quote: str) -> bool:
         """True if the quote is generic satisfaction/praise with no articulated pain.

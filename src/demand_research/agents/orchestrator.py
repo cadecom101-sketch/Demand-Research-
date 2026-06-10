@@ -37,6 +37,7 @@ from demand_research.next_evidence import (
     build_next_evidence_plan,
     render_next_evidence_markdown,
 )
+from demand_research.tool_failure import build_belief_state, detect_run_tool_failures
 from demand_research.research.query_planner import build_search_plan
 from demand_research.research.claude_researcher import ClaudeResearcher, ResearchUnavailableError
 from demand_research.agents.phase_agents import (
@@ -151,7 +152,22 @@ class ResearchOrchestrator:
         phase_results: List[PhaseResult],
         recorder: Optional[object],
     ) -> DemandBrief:
-        run_status = recorder.run_status if recorder is not None else "success"
+        # Research/tool-failure detection FIRST: a phase whose raw research
+        # reports a tool/search failure (or whose searches errored) marks the
+        # run partial BEFORE run_status is read, so the existing `tool_failure`
+        # hard gate caps the verdict at PARK. Detection only ever lowers — a
+        # tool failure is neither evidence for nor against demand.
+        search_failures = (
+            recorder.search_failures_by_phase() if recorder is not None else {}
+        )
+        tool_failures = detect_run_tool_failures(phase_results, search_failures)
+        if recorder is not None:
+            for failure in tool_failures:
+                recorder.log_research_tool_failure(failure)
+            run_status = recorder.run_status
+        else:
+            run_status = "partial" if tool_failures else "success"
+
         phase_by_num = {p.phase_number: p for p in phase_results}
         all_sources = brief.all_sources()
 
@@ -243,16 +259,50 @@ class ResearchOrchestrator:
             else {"total": 0, "by_reason": {}, "examples": []}
         )
         extraction_errors = recorder.extraction_error_count if recorder is not None else 0
+        salvage_events = recorder.extraction_salvage_count if recorder is not None else 0
         search_plan = build_search_plan(hypothesis)
+        belief_state = build_belief_state(
+            phase_results=phase_results, e1_artifact=e1_artifact,
+            signals=signals, tool_failures=tool_failures,
+        )
         diagnostics = build_decision_diagnostics(
             brief=brief, e1_artifact=e1_artifact, signals=signals,
             phase_results=phase_results, rejected_summary=rejected_summary,
             run_status=run_status, extraction_error_count=extraction_errors,
+            extraction_salvage_count=salvage_events,
+            tool_failures=tool_failures, belief_state=belief_state,
         )
         next_plan = build_next_evidence_plan(
             hypothesis=hypothesis, brief=brief, e1_artifact=e1_artifact, signals=signals,
+            tool_failures=tool_failures,
+            phases_not_run=diagnostics.get("phases_not_run", []),
         )
         next_plan_md = render_next_evidence_markdown(next_plan)
+
+        # Scorecard clarity: label whether the score came from a clean or a
+        # partial/tool-failed observation, and restate why score alone never
+        # approves. Pure reporting — the formula, gates, and thresholds are
+        # untouched.
+        if tool_failures:
+            clean_vs_partial = "partial_tool_failure"
+            partial_caps = (
+                "This run had detected research/tool failure(s); the score is NOT a "
+                "clean market score. The tool_failure hard gate caps a partial run at "
+                "PARK regardless of score."
+            )
+        elif run_status in ("partial", "failed"):
+            clean_vs_partial = "partial_extraction"
+            partial_caps = (
+                "This run was partial (extraction parse/salvage events); the score is "
+                "NOT a clean market score. The tool_failure hard gate caps a partial "
+                "run at PARK regardless of score."
+            )
+        else:
+            clean_vs_partial = "clean"
+            partial_caps = None
+        tooling_starved_gates = diagnostics.get(
+            "gates_not_fully_evaluable_due_to_tooling", []
+        )
 
         audit_core = {
             "evidence_stage": brief.evidence_stage.value,
@@ -262,6 +312,17 @@ class ResearchOrchestrator:
                 "total_score": outcome.score,
                 "decision_thresholds": outcome.thresholds,
                 "hard_gate_overrides": outcome.overrides,
+                "hard_gate_caps": outcome.overrides,
+                "partial_run_caps": partial_caps,
+                "why_score_does_not_approve": (
+                    "Approval requires every E1 gate to pass on real documented "
+                    "evidence. A high score with a failed hard gate (e.g. missing "
+                    "verbatim buyer pain) or a partial/tool-failed observation can "
+                    "never approve; source count and screenshots never compensate "
+                    "for a missing hard gate."
+                ),
+                "evidence_not_observed_due_to_tooling": tooling_starved_gates,
+                "clean_vs_partial": clean_vs_partial,
             },
             "gates": [g.model_dump(mode="json") for g in outcome.gates],
             "fatal_gaps": outcome.fatal_gaps,

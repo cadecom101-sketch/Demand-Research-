@@ -47,6 +47,7 @@ ARTIFACT_FILES = [
     "evidence_scorecard.json",
     "e1_review_gates.json",
     "extraction_errors.jsonl",
+    "research_tool_failures.jsonl",
     "search_plan.json",
     "decision_diagnostics.json",
     "next_evidence_plan.json",
@@ -133,6 +134,10 @@ class RunRecorder:
         self._search_counts: Counter = Counter()
         self._search_total = 0
         self._search_seen: set = set()  # (phase_id, normalized_query) already written
+        # Per-phase provider-reported search failures (tool_error/rate_limited),
+        # consumed by the research/tool-failure detector.
+        self._search_failures_by_phase: dict = {}
+        self._research_tool_failures: List[dict] = []
         self._rejected_by_reason: Counter = Counter()
         self._rejected_examples: List[dict] = []
         self._buyer_artifacts: List[dict] = []
@@ -221,6 +226,9 @@ class RunRecorder:
             status = a.get("status", "unknown")
             self._search_counts[status] += 1
             self._search_total += 1
+            if status in ("tool_error", "rate_limited"):
+                per_phase = self._search_failures_by_phase.setdefault(phase_id, Counter())
+                per_phase[status] += 1
             entry = SearchLogEntry(
                 run_id=self.run_id,
                 phase_id=phase_id,
@@ -448,6 +456,43 @@ class RunRecorder:
             f"{record['discarded_malformed_source_objects']} (run marked partial)."
         )
 
+    def log_research_tool_failure(self, record: dict) -> None:
+        """Durably record a detected research/tool failure for one phase.
+
+        The record (from `tool_failure.detect_run_tool_failures`) carries the
+        phase id/name, failure types, severity, detection sources, matched
+        signals with short previews, and the partial/certification flags. The
+        run is marked partial: a tool-failed observation can never be certified
+        as a clean market conclusion, and the existing `tool_failure` hard gate
+        caps a partial run at PARK (fail-closed; never raises a verdict).
+        Never logs API keys, credentials, or system prompts.
+        """
+        if self.run_status == "success":
+            self.run_status = "partial"
+        stamped = {
+            "run_id": self.run_id,
+            "timestamp_utc": _utc_now_iso(),
+            **record,
+        }
+        self._research_tool_failures.append(stamped)
+        self._append_jsonl("research_tool_failures.jsonl", stamped)
+        self.add_note(
+            f"{record.get('phase_id', 'phase_?')} research/tool failure detected "
+            f"({'/'.join(record.get('failure_types', []))}; severity "
+            f"{record.get('failure_severity', 'unknown')}): observation incomplete — "
+            "NOT a market conclusion; run marked partial (fail-closed)."
+        )
+
+    @property
+    def research_tool_failure_count(self) -> int:
+        """Number of phases with a detected research/tool failure this run."""
+        return len(self._research_tool_failures)
+
+    def search_failures_by_phase(self) -> dict:
+        """Provider-reported search failures per phase:
+        {phase_id: {"tool_error": n, "rate_limited": n}}."""
+        return {pid: dict(c) for pid, c in self._search_failures_by_phase.items()}
+
     # ------------------------------------------------------------------ #
     # Summaries for the bundle / markdown
     # ------------------------------------------------------------------ #
@@ -487,7 +532,10 @@ class RunRecorder:
         scorecard = EvidenceScorecard(run_id=self.run_id, **{
             k: scorecard_dict.get(k)
             for k in ("formula_version", "components", "total_score",
-                      "decision_thresholds", "hard_gate_overrides")
+                      "decision_thresholds", "hard_gate_overrides",
+                      "score_meaning", "hard_gate_caps", "partial_run_caps",
+                      "why_score_does_not_approve",
+                      "evidence_not_observed_due_to_tooling", "clean_vs_partial")
             if scorecard_dict.get(k) is not None
         })
         self._write_json("evidence_scorecard.json", scorecard.model_dump(mode="json"))
@@ -498,6 +546,7 @@ class RunRecorder:
         bundle["run_status"] = self.run_status
         bundle["search_summary"] = self.search_summary()
         bundle["rejected_summary"] = self.rejected_summary()
+        bundle["research_tool_failures"] = self._research_tool_failures
         bundle["buyer_artifacts"] = self._buyer_artifacts
         bundle["price_bands"] = self._price_bands
         bundle["competitors"] = self._competitors

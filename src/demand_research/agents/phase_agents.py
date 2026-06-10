@@ -468,6 +468,27 @@ class Phase2Agent(BasePhaseAgent):
                             validator_rule="phase2_pain_requirement",
                         )
                     continue
+                # Generic NEGATIVE reviews ("bad download", "seller was rude",
+                # "too expensive") prove product dissatisfaction, not the
+                # target buyer pain — rejected durably unless the exact quote
+                # connects to the target job. Negative remarks that name the
+                # target pain ("didn't help me know what product to make",
+                # "still got no sales") pass through and count.
+                if self.validator.is_generic_negative_review(card.buyer_language_captured):
+                    if recorder is not None:
+                        recorder.log_rejected(
+                            f"phase_{self.phase_number}", self.phase_name,
+                            {
+                                "url": str(card.url),
+                                "source_name": card.source_name,
+                                "platform": card.platform,
+                                "what_it_proves": card.what_this_proves,
+                                "buyer_language": card.buyer_language_captured or "",
+                            },
+                            reason="generic_negative_not_target_pain",
+                            validator_rule="phase2_target_pain_requirement",
+                        )
+                    continue
                 artifacts.append(card)
             elif recorder is not None:
                 reason, rule = _phase2_rejection(card)
