@@ -65,6 +65,14 @@ class SourceLedgerEntry(BaseModel):
     # (after an earlier hard-gate phase failed). It is preserved for future
     # cycles but can never satisfy a gate or claim in the run that wrote it.
     diagnostic_only: bool = False
+    # Screenshot audit documentation. Screenshots never satisfy a gate and
+    # never invalidate evidence; they mark audit completeness only.
+    screenshot_filename: Optional[str] = None
+    screenshot_sha256: Optional[str] = None
+    # audit_complete       -> screenshot captured for this accepted source;
+    # audit_incomplete     -> capture was available but no screenshot exists;
+    # capture_unavailable  -> capture not configured/available this run.
+    audit_status: str = "capture_unavailable"
 
 
 class BuyerLanguageArtifact(BaseModel):

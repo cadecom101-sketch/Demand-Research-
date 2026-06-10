@@ -205,6 +205,8 @@ def build_default_registry(
                     "Screenshot capture is not configured for this run "
                     "(ENABLE_SCREENSHOTS is off).")
         try:
+            if not getattr(screenshot_capture, "configured", False):
+                return ("not_configured", screenshot_capture.availability_detail())
             if screenshot_capture.is_available():
                 return ("available", screenshot_capture.availability_detail())
             return ("unavailable", screenshot_capture.availability_detail())

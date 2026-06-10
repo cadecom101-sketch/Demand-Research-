@@ -50,6 +50,7 @@ ARTIFACT_FILES = [
     "research_tool_failures.jsonl",
     "diagnostic_continuation.json",
     "connector_registry.json",
+    "screenshots.jsonl",
     "search_plan.json",
     "decision_diagnostics.json",
     "next_evidence_plan.json",
@@ -143,6 +144,7 @@ class RunRecorder:
         self._research_tool_failures: List[dict] = []
         self._diagnostic_continuation: dict = {}
         self._connector_registry: dict = {}
+        self._screenshots: List[dict] = []
         self._rejected_by_reason: Counter = Counter()
         self._rejected_examples: List[dict] = []
         self._buyer_artifacts: List[dict] = []
@@ -315,6 +317,21 @@ class RunRecorder:
         """Write the E1 review gates artifact (valid JSON; pass AND fail runs)."""
         self._e1_review_gates = record
         self._write_json("e1_review_gates.json", record)
+
+    def log_screenshot(self, record: dict) -> None:
+        """Append one screenshot attempt record (success, failure, or skip).
+
+        Every accepted public source gets exactly one record — including when
+        capture was unavailable — so screenshot coverage is fully auditable.
+        Screenshots document evidence; they never satisfy a gate, never
+        invalidate evidence, and never change a verdict.
+        """
+        stamped = {"run_id": self.run_id, "timestamp_utc": _utc_now_iso(), **record}
+        self._screenshots.append(stamped)
+        self._append_jsonl("screenshots.jsonl", stamped)
+
+    def screenshot_records(self) -> List[dict]:
+        return list(self._screenshots)
 
     def write_connector_registry(self, connectors: List[dict], summary: dict) -> None:
         """Write the per-run evidence-connector audit (valid JSON).
@@ -602,6 +619,7 @@ class RunRecorder:
             bundle.setdefault("diagnostic_continuation", self._diagnostic_continuation)
         if self._connector_registry:
             bundle.setdefault("connector_registry", self._connector_registry)
+        bundle["screenshots"] = self._screenshots
         bundle["buyer_artifacts"] = self._buyer_artifacts
         bundle["price_bands"] = self._price_bands
         bundle["competitors"] = self._competitors

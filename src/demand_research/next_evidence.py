@@ -130,6 +130,7 @@ def build_decision_diagnostics(
     tool_failures: Optional[List[dict]] = None,
     belief_state: Optional[dict] = None,
     diagnostic_continuation: Optional[dict] = None,
+    screenshot_coverage: Optional[dict] = None,
 ) -> dict:
     """Explain the verdict without changing it.
 
@@ -276,6 +277,9 @@ def build_decision_diagnostics(
         "gates_not_observed": gates_not_observed,
         "gates_evaluated_diagnostically": gates_diagnostic,
         "diagnostic_continuation": diagnostic_continuation,
+        # Screenshot audit coverage: completeness of evidence DOCUMENTATION,
+        # reported separately from gate validity. Never a gate input.
+        "screenshot_coverage": screenshot_coverage or {},
         "uncertainty_types": uncertainty_types,
         "belief_state": belief_state or {},
         "generic_evidence_only": generic_only,

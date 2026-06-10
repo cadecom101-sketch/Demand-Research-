@@ -38,6 +38,11 @@ from demand_research.next_evidence import (
     render_next_evidence_markdown,
 )
 from demand_research.connectors import build_default_registry
+from demand_research.screenshots import (
+    ScreenshotCapture,
+    build_screenshot_capture,
+    build_screenshot_coverage,
+)
 from demand_research.tool_failure import build_belief_state, detect_run_tool_failures
 from demand_research.research.query_planner import build_search_plan
 from demand_research.research.claude_researcher import ClaudeResearcher, ResearchUnavailableError
@@ -56,10 +61,16 @@ logger = logging.getLogger(__name__)
 class ResearchOrchestrator:
     """Manages all 5 phases of demand research workflow plus the audit trail."""
 
-    def __init__(self, researcher: Optional[ClaudeResearcher] = None):
+    def __init__(
+        self,
+        researcher: Optional[ClaudeResearcher] = None,
+        screenshotter: Optional[ScreenshotCapture] = None,
+    ):
         from demand_research.config import settings
 
         self._model_name = settings.anthropic_model
+        # Optional, passive screenshot capture (off by default; never evidence).
+        self._screenshotter = screenshotter or build_screenshot_capture()
         shared = researcher or ClaudeResearcher(
             model=settings.anthropic_model, effort=settings.anthropic_effort
         )
@@ -263,10 +274,20 @@ class ResearchOrchestrator:
                 recorder.write_diagnostic_continuation(diagnostic_continuation)
 
         # Write the source ledger + buyer-language artifacts and get graded sources.
-        graded, phase_cards = self._build_graded_sources(
+        graded, phase_cards, screenshot_records = self._build_graded_sources(
             brief, phase_results, recorder, diagnostic_phases=diagnostic_phases
         )
         graded_gating = [g for g in graded if not g.get("diagnostic_only")]
+
+        # Screenshot audit coverage over the run's accepted public sources.
+        # Reporting only: it distinguishes gate evidence VALIDITY (decided by
+        # the gates) from audit COMPLETENESS (screenshot documentation where
+        # capture is technically available). Never a gate input.
+        screenshot_coverage = build_screenshot_coverage(
+            capture=self._screenshotter,
+            screenshot_records=screenshot_records,
+            accepted_public_source_ids=[g["source_id"] for g in graded],
+        )
 
         run_id = recorder.run_id if recorder is not None else "local"
 
@@ -345,6 +366,11 @@ class ResearchOrchestrator:
         brief.e1_review = {
             **e1.to_artifact(run_id),
             "revenue_os_payload_draft": e1.revenue_os_payload_draft,
+            # Audit completeness is a SEPARATE dimension from gate validity:
+            # screenshots never satisfy or weaken a gate, but accepted public
+            # evidence should carry screenshot documentation before clean
+            # E1 recording.
+            "audit_completeness": screenshot_coverage,
         }
 
         # E1 claims 6–9 (fit + workflow-boundary) extend the ledger.
@@ -365,7 +391,7 @@ class ResearchOrchestrator:
         # Decision diagnostics + next-evidence plan (additive; explain/guide
         # only — they never change a gate, threshold, or verdict). The search
         # plan is the diversified evidence-seeking plan from the query planner.
-        e1_artifact = e1.to_artifact(run_id)
+        e1_artifact = {**e1.to_artifact(run_id), "audit_completeness": screenshot_coverage}
         rejected_summary = (
             recorder.rejected_summary() if recorder is not None
             else {"total": 0, "by_reason": {}, "examples": []}
@@ -385,6 +411,7 @@ class ResearchOrchestrator:
             extraction_salvage_count=salvage_events,
             tool_failures=tool_failures, belief_state=belief_state,
             diagnostic_continuation=diagnostic_continuation,
+            screenshot_coverage=screenshot_coverage,
         )
         next_plan = build_next_evidence_plan(
             hypothesis=hypothesis, brief=brief, e1_artifact=e1_artifact, signals=signals,
@@ -452,7 +479,16 @@ class ResearchOrchestrator:
             "gates": [g.model_dump(mode="json") for g in outcome.gates],
             "fatal_gaps": outcome.fatal_gaps,
             "run_status": run_status,
-            "next_experiment": next_step_for(e1),
+            "next_experiment": next_step_for(e1) + (
+                " NOTE (audit completeness): accepted public evidence is missing "
+                "screenshot documentation "
+                f"({screenshot_coverage.get('reason') or 'see screenshot coverage'}). "
+                "Complete screenshot capture for the accepted sources before "
+                "recording — this documents the evidence; it does not re-validate it."
+                if e1.review_verdict == "E1_APPROVED_TO_RECORD"
+                and not screenshot_coverage.get("audit_complete_for_e1_recording")
+                else ""
+            ),
             "what_proves": _what_proves(claims),
             "what_not_proves": what_not_proves,
             "what_would_change": what_would_change_for(e1),
@@ -473,6 +509,7 @@ class ResearchOrchestrator:
                 "connectors": getattr(self, "_connector_audit", []),
                 "summary": getattr(self, "_connector_summary", {}),
             },
+            "screenshot_coverage": screenshot_coverage,
         }
 
         if recorder is not None:
@@ -480,8 +517,9 @@ class ResearchOrchestrator:
             recorder.write_decision_diagnostics(diagnostics)
             recorder.write_next_evidence_plan(next_plan, next_plan_md)
             # Write the E1 gates artifact (pass AND fail runs) before finalize so
-            # the manifest can summarise the review state.
-            recorder.write_e1_review_gates(e1.to_artifact(run_id))
+            # the manifest can summarise the review state. It carries the
+            # audit-completeness block alongside (never inside) the gates.
+            recorder.write_e1_review_gates(e1_artifact)
             recorder.finalize(brief, audit_core, claims)
         else:
             # In-memory bundle (no files). Markdown still renders audit sections.
@@ -497,7 +535,8 @@ class ResearchOrchestrator:
                 "price_bands": price_bands,
                 "competitors": competitors,
                 "missing_mechanism": missing_mechanism,
-                "e1_review_gates": e1.to_artifact(run_id),
+                "e1_review_gates": e1_artifact,
+                "screenshots": screenshot_records,
                 "artifact_paths": {},
             }
 
@@ -525,6 +564,8 @@ class ResearchOrchestrator:
         diagnostic_phases = diagnostic_phases or set()
         graded: List[dict] = []
         phase_cards: dict[int, list] = {}
+        screenshot_records: List[dict] = []
+        shot_cache: dict = {}  # url -> ScreenshotResult (one capture per URL)
         counter = 0
         for phase in phase_results:
             num = phase.phase_number
@@ -539,8 +580,13 @@ class ResearchOrchestrator:
                 # Make the card self-describing too.
                 card.evidence_type = etype
                 card.evidence_grade = grade
+                sid = recorder.next_source_id() if recorder is not None else f"S{counter:03d}"
+                # Screenshot documentation for the accepted public source.
+                # Capture success/failure NEVER changes acceptance, grading, or
+                # any gate — it only feeds audit completeness.
+                shot = self._capture_screenshot(card, sid, num, recorder, shot_cache)
+                screenshot_records.append(shot)
                 if recorder is not None:
-                    sid = recorder.next_source_id()
                     entry = SourceLedgerEntry(
                         run_id=recorder.run_id, source_id=sid,
                         phase_id=f"phase_{num}", phase_name=phase.phase_name,
@@ -554,6 +600,9 @@ class ResearchOrchestrator:
                         claim_not_supported=card.what_this_does_not_prove or "",
                         confidence=conf,
                         diagnostic_only=is_diagnostic,
+                        screenshot_filename=shot.get("file_path"),
+                        screenshot_sha256=shot.get("sha256"),
+                        audit_status=shot.get("audit_status", "capture_unavailable"),
                     )
                     recorder.log_source(entry)
                     if card.is_direct_quote and card.buyer_language_captured:
@@ -566,14 +615,48 @@ class ResearchOrchestrator:
                             strength="strong", why_it_matters=card.what_this_proves or "",
                             what_it_does_not_prove=card.what_this_does_not_prove or "",
                         ))
-                else:
-                    sid = f"S{counter:03d}"
                 phase_cards[num].append((sid, card))
                 graded.append({
                     "source_id": sid, "phase": num, "grade": grade,
                     "evidence_type": etype, "diagnostic_only": is_diagnostic,
                 })
-        return graded, phase_cards
+        return graded, phase_cards, screenshot_records
+
+    def _capture_screenshot(self, card, sid, phase_num, recorder, cache) -> dict:
+        """Attempt (or honestly skip) screenshot documentation for one accepted
+        source. Returns the per-source screenshot record; logs it durably when a
+        recorder is present. Never raises; never affects acceptance or gates."""
+        shooter = self._screenshotter
+        url = str(card.url)
+        result = cache.get(url)
+        if result is None:
+            out_dir = (recorder.run_dir / "screenshots") if recorder is not None else None
+            try:
+                result = shooter.capture(url, out_dir)
+            except Exception as exc:  # noqa: BLE001 — capture must never break a run
+                from demand_research.screenshots import ScreenshotResult
+                result = ScreenshotResult(
+                    url=url, attempted=True, success=False,
+                    error_reason=f"capture raised unexpectedly: {exc}",
+                )
+            cache[url] = result
+        if result.success and result.file_path and not card.screenshot_filename:
+            card.screenshot_filename = result.file_path
+        if result.success:
+            audit_status = "audit_complete"
+        elif shooter.is_available():
+            audit_status = "audit_incomplete"
+        else:
+            audit_status = "capture_unavailable"
+        record = {
+            "source_id": sid,
+            "phase_id": f"phase_{phase_num}",
+            "audit_status": audit_status,
+            **result.to_record(),
+        }
+        if recorder is not None:
+            recorder.log_screenshot(record)
+        return record
 
     # ------------------------------------------------------------------ #
     # Structured phase artifacts

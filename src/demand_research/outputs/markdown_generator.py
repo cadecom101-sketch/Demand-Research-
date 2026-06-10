@@ -75,6 +75,7 @@ class _Renderer:
         L += self._search_summary()
         L += self._rejected_summary()
         L += self._connector_registry()
+        L += self._screenshot_coverage()
         L += self._section("What This Proves", self.audit.get("what_proves", "Not assessed."))
         L += self._section("What This Does NOT Prove", self.audit.get("what_not_proves", "Not assessed."))
         L += self._section("What Would Change This Verdict", self.audit.get("what_would_change", "Not assessed."))
@@ -395,6 +396,35 @@ class _Renderer:
                 f"| `{c.get('name','')}` | {c.get('kind','')} | "
                 f"{c.get('status','')} | {phases} | {c.get('detail','')} |"
             )
+        L.append("")
+        return L
+
+    def _screenshot_coverage(self) -> list[str]:
+        cov = self.audit.get("screenshot_coverage") or {}
+        if not cov:
+            return []
+        L = ["## Screenshot Audit Coverage", ""]
+        L.append(
+            "_Audit completeness is reported separately from gate validity: a "
+            "screenshot never satisfies a gate and a missing screenshot never "
+            "invalidates evidence — it only marks the documentation incomplete._"
+        )
+        L.append("")
+        L.append(f"- **Capture configured:** {cov.get('capture_configured', False)}")
+        L.append(f"- **Capture available:** {cov.get('capture_available', False)} — "
+                 f"{cov.get('capture_detail', '')}")
+        L.append(f"- **Accepted public sources requiring screenshots:** "
+                 f"{cov.get('screenshots_required_for_accepted_public_sources', 0)}")
+        L.append(f"- **Attempted:** {cov.get('screenshots_attempted', 0)} | "
+                 f"**Captured:** {cov.get('screenshots_captured', 0)} | "
+                 f"**Failed:** {cov.get('screenshots_failed', 0)}")
+        missing = cov.get("accepted_sources_without_screenshots", [])
+        if missing:
+            L.append(f"- **Accepted sources WITHOUT screenshots:** {', '.join(missing)}")
+        L.append(f"- **Audit complete for E1 recording:** "
+                 f"{cov.get('audit_complete_for_e1_recording', False)}")
+        if cov.get("reason"):
+            L.append(f"- **Why:** {cov['reason']}")
         L.append("")
         return L
 
