@@ -37,6 +37,7 @@ from demand_research.next_evidence import (
     build_next_evidence_plan,
     render_next_evidence_markdown,
 )
+from demand_research.connectors import build_default_registry
 from demand_research.tool_failure import build_belief_state, detect_run_tool_failures
 from demand_research.research.query_planner import build_search_plan
 from demand_research.research.claude_researcher import ClaudeResearcher, ResearchUnavailableError
@@ -95,6 +96,19 @@ class ResearchOrchestrator:
         logger.info("Starting research workflow for: %s", hypothesis.product_name)
         self._workflow_mode = workflow_mode
         self._target_member = target_member
+
+        # Evidence-connector audit: record up front which connectors/capabilities
+        # this run can use. Capability reporting only — unavailable connectors
+        # are skipped safely (no prompt, no crash) and never fabricated.
+        self._connector_registry = build_default_registry(
+            screenshot_capture=getattr(self, "_screenshotter", None),
+        )
+        self._connector_audit = self._connector_registry.audit()
+        self._connector_summary = self._connector_registry.summary()
+        if recorder is not None:
+            recorder.write_connector_registry(
+                self._connector_audit, self._connector_summary
+            )
 
         brief = DemandBrief(
             product_hypothesis=hypothesis,
@@ -455,6 +469,10 @@ class ResearchOrchestrator:
             "decision_diagnostics": diagnostics,
             "next_evidence_plan": next_plan,
             "diagnostic_continuation": diagnostic_continuation,
+            "connector_registry": {
+                "connectors": getattr(self, "_connector_audit", []),
+                "summary": getattr(self, "_connector_summary", {}),
+            },
         }
 
         if recorder is not None:

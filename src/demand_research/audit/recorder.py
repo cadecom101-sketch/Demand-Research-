@@ -49,6 +49,7 @@ ARTIFACT_FILES = [
     "extraction_errors.jsonl",
     "research_tool_failures.jsonl",
     "diagnostic_continuation.json",
+    "connector_registry.json",
     "search_plan.json",
     "decision_diagnostics.json",
     "next_evidence_plan.json",
@@ -62,7 +63,7 @@ _EMPTY_JSON_ARTIFACTS = {
     "run_manifest.json", "evidence_scorecard.json",
     "missing_mechanism_gap.json", "e1_review_gates.json", "demand_brief.json",
     "search_plan.json", "decision_diagnostics.json", "next_evidence_plan.json",
-    "diagnostic_continuation.json",
+    "diagnostic_continuation.json", "connector_registry.json",
 }
 
 
@@ -141,6 +142,7 @@ class RunRecorder:
         self._search_failures_by_phase: dict = {}
         self._research_tool_failures: List[dict] = []
         self._diagnostic_continuation: dict = {}
+        self._connector_registry: dict = {}
         self._rejected_by_reason: Counter = Counter()
         self._rejected_examples: List[dict] = []
         self._buyer_artifacts: List[dict] = []
@@ -313,6 +315,28 @@ class RunRecorder:
         """Write the E1 review gates artifact (valid JSON; pass AND fail runs)."""
         self._e1_review_gates = record
         self._write_json("e1_review_gates.json", record)
+
+    def write_connector_registry(self, connectors: List[dict], summary: dict) -> None:
+        """Write the per-run evidence-connector audit (valid JSON).
+
+        Records which connectors/capabilities were available, reachable via the
+        web-search provider, not configured, or unavailable — and why. Honest
+        capability reporting only: never evidence, never a gate input.
+        """
+        record = {
+            "run_id": self.run_id,
+            "checked_utc": _utc_now_iso(),
+            "connectors": connectors,
+            "summary": summary,
+        }
+        self._connector_registry = record
+        self._write_json("connector_registry.json", record)
+        unusable = summary.get("unusable") or []
+        if unusable:
+            self.add_note(
+                f"Connectors not usable this run (skipped safely, no prompt issued): "
+                f"{', '.join(unusable)}."
+            )
 
     def write_search_plan(self, plan: dict) -> None:
         """Write the diversified evidence-seeking search plan (valid JSON)."""
@@ -576,6 +600,8 @@ class RunRecorder:
         bundle["research_tool_failures"] = self._research_tool_failures
         if self._diagnostic_continuation:
             bundle.setdefault("diagnostic_continuation", self._diagnostic_continuation)
+        if self._connector_registry:
+            bundle.setdefault("connector_registry", self._connector_registry)
         bundle["buyer_artifacts"] = self._buyer_artifacts
         bundle["price_bands"] = self._price_bands
         bundle["competitors"] = self._competitors

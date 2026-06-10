@@ -74,6 +74,7 @@ class _Renderer:
         L += self._claim_ledger()
         L += self._search_summary()
         L += self._rejected_summary()
+        L += self._connector_registry()
         L += self._section("What This Proves", self.audit.get("what_proves", "Not assessed."))
         L += self._section("What This Does NOT Prove", self.audit.get("what_not_proves", "Not assessed."))
         L += self._section("What Would Change This Verdict", self.audit.get("what_would_change", "Not assessed."))
@@ -372,6 +373,29 @@ class _Renderer:
                     f"{entry.get('evidence_count', 0)} | {entry.get('reason', '')} |"
                 )
             L.append("")
+        return L
+
+    def _connector_registry(self) -> list[str]:
+        reg = self.audit.get("connector_registry") or {}
+        connectors = reg.get("connectors", [])
+        if not connectors:
+            return []
+        L = ["## Evidence Connectors", ""]
+        L.append(
+            "_Capability audit only: which evidence surfaces this run could "
+            "observe and how. Unavailable connectors were skipped safely; a "
+            "connector's status is never evidence and never feeds a gate._"
+        )
+        L.append("")
+        L.append("| Connector | Kind | Status | Phases | Detail |")
+        L.append("| --------- | ---- | ------ | ------ | ------ |")
+        for c in connectors:
+            phases = ", ".join(str(p) for p in c.get("phases", [])) or "—"
+            L.append(
+                f"| `{c.get('name','')}` | {c.get('kind','')} | "
+                f"{c.get('status','')} | {phases} | {c.get('detail','')} |"
+            )
+        L.append("")
         return L
 
     def _next_evidence_plan(self) -> list[str]:
