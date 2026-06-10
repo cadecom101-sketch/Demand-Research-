@@ -61,6 +61,18 @@ class SourceLedgerEntry(BaseModel):
     claim_supported: str = ""
     claim_not_supported: str = ""
     confidence: float = 0.0
+    # True when this source was collected during diagnostic-only continuation
+    # (after an earlier hard-gate phase failed). It is preserved for future
+    # cycles but can never satisfy a gate or claim in the run that wrote it.
+    diagnostic_only: bool = False
+    # Screenshot audit documentation. Screenshots never satisfy a gate and
+    # never invalidate evidence; they mark audit completeness only.
+    screenshot_filename: Optional[str] = None
+    screenshot_sha256: Optional[str] = None
+    # audit_complete       -> screenshot captured for this accepted source;
+    # audit_incomplete     -> capture was available but no screenshot exists;
+    # capture_unavailable  -> capture not configured/available this run.
+    audit_status: str = "capture_unavailable"
 
 
 class BuyerLanguageArtifact(BaseModel):
@@ -106,7 +118,13 @@ class ScoreComponent(BaseModel):
 
 
 class EvidenceScorecard(BaseModel):
-    """The full, visible scoring breakdown for a run."""
+    """The full, visible scoring breakdown for a run.
+
+    The clarity fields below explain what the score does and does not mean.
+    They change nothing about how the score is computed or used: the score
+    alone never approves E1, hard gates always dominate, and a partial /
+    tool-failed run's score is explicitly NOT a clean market score.
+    """
 
     run_id: str
     formula_version: str = "v1"
@@ -114,6 +132,21 @@ class EvidenceScorecard(BaseModel):
     total_score: float = 0.0
     decision_thresholds: dict = Field(default_factory=dict)
     hard_gate_overrides: List[str] = Field(default_factory=list)
+    # Scorecard clarity (diagnostic text/labels; never inputs to any decision).
+    score_meaning: str = (
+        "Weighted evidence-quality score (0–1) over the ACCEPTED evidence mix. "
+        "It measures evidence quality, not market truth, and by itself it never "
+        "approves E1 — every hard gate must independently pass on real documented "
+        "evidence."
+    )
+    hard_gate_caps: List[str] = Field(default_factory=list)
+    partial_run_caps: Optional[str] = None
+    why_score_does_not_approve: Optional[str] = None
+    evidence_not_observed_due_to_tooling: List[str] = Field(default_factory=list)
+    clean_vs_partial: str = "clean"
+    # Set when later phases ran in diagnostic-only continuation: their evidence
+    # is excluded from this score and from every gate (reporting only).
+    diagnostic_continuation_note: Optional[str] = None
 
 
 class GateResult(BaseModel):

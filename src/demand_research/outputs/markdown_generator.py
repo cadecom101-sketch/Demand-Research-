@@ -74,9 +74,13 @@ class _Renderer:
         L += self._claim_ledger()
         L += self._search_summary()
         L += self._rejected_summary()
+        L += self._connector_registry()
+        L += self._screenshot_coverage()
         L += self._section("What This Proves", self.audit.get("what_proves", "Not assessed."))
         L += self._section("What This Does NOT Prove", self.audit.get("what_not_proves", "Not assessed."))
         L += self._section("What Would Change This Verdict", self.audit.get("what_would_change", "Not assessed."))
+        L += self._decision_diagnostics()
+        L += self._next_evidence_plan()
         L += self._revenue_payload()
         L += self._section("Next Recommended Step", self.audit.get("next_experiment", "Not assessed."))
         L += self._all_sources()
@@ -286,6 +290,169 @@ class _Renderer:
         L.append("")
         return L
 
+    def _decision_diagnostics(self) -> list[str]:
+        diag = self.audit.get("decision_diagnostics") or {}
+        if not diag:
+            return []
+        L = ["## Decision Diagnostics", ""]
+        L.append(f"- **Failure mode:** `{diag.get('failure_mode', 'n/a')}` — "
+                 f"{diag.get('failure_mode_note', '')}")
+        if diag.get("run_partial"):
+            L.append("- **Run status:** PARTIAL — observation of the market was "
+                     "incomplete; this run cannot be certified as a clean observation.")
+        if diag.get("not_a_market_conclusion"):
+            L.append("- **NOT a market conclusion:** evidence shortfalls in the affected "
+                     "phase(s) reflect tooling/observation failure, not researched "
+                     "absence of demand.")
+        for tf in diag.get("tool_failures", []) or []:
+            L.append(
+                f"- **Tool/search failure:** Phase {tf.get('phase')} "
+                f"({tf.get('phase_name', '')}) — "
+                f"{'/'.join(tf.get('failure_types', []))}; severity "
+                f"{tf.get('failure_severity', 'unknown')}; detected via "
+                f"{', '.join(tf.get('detection_sources', []))}."
+            )
+        cont = diag.get("diagnostic_continuation") or {}
+        if cont:
+            L.append(
+                f"- **Diagnostic continuation:** Phase {cont.get('triggered_by_phase')} "
+                f"({cont.get('triggered_by_phase_name', '')}) failed first; phases "
+                f"{cont.get('diagnostic_phases', [])} still ran in DIAGNOSTIC-ONLY mode. "
+                "Their evidence is recorded in the artifacts for future cycles but is "
+                "excluded from every gate, claim, score, and the E1 review of this run "
+                "— it can never override the failed hard gate or make this run "
+                "approval-eligible."
+            )
+        if diag.get("uncertainty_types"):
+            L.append("- **Uncertainty types:** "
+                     + ", ".join(f"`{u}`" for u in diag["uncertainty_types"]))
+        failing = diag.get("failing_e1_gates", [])
+        if failing:
+            L.append(f"- **Failing E1 gates (priority order):** "
+                     + ", ".join(f"`{g}`" for g in failing))
+        tooling_gates = diag.get("gates_not_fully_evaluable_due_to_tooling", [])
+        if tooling_gates:
+            L.append("- **Gates not fully evaluable due to tooling:** "
+                     + ", ".join(f"`{g}`" for g in tooling_gates))
+        clean_gates = diag.get("gates_unsupported_after_clean_search", [])
+        if clean_gates:
+            L.append("- **Gates unsupported after clean search:** "
+                     + ", ".join(f"`{g}`" for g in clean_gates))
+        diag_gates = diag.get("gates_evaluated_diagnostically", [])
+        if diag_gates:
+            L.append("- **Gates evaluated diagnostically only (evidence preserved, "
+                     "cannot pass this run):** "
+                     + ", ".join(f"`{g}`" for g in diag_gates))
+        if diag.get("why_generic_not_enough"):
+            L.append(f"- **Why generic evidence is not enough:** {diag['why_generic_not_enough']}")
+        rej = diag.get("rejected_evidence", {}) or {}
+        if rej.get("total"):
+            by_reason = ", ".join(f"{k}={v}" for k, v in (rej.get("by_reason") or {}).items())
+            L.append(f"- **Rejected evidence:** {rej.get('total')} ({by_reason})")
+        L.append("")
+        L.append("| Phase | Status | Observation state | Accepted | Supports E1 gate(s) |")
+        L.append("| ----- | ------ | ----------------- | -------- | ------------------- |")
+        for p in diag.get("phases", []):
+            L.append(
+                f"| {p.get('phase')} {p.get('name','')} | {p.get('status','')} | "
+                f"{p.get('observation_state', '—')} | "
+                f"{p.get('accepted_source_count', 0)} | "
+                f"{', '.join(p.get('supports_e1_gates', [])) or '—'} |"
+            )
+        L.append("")
+        belief = diag.get("belief_state") or {}
+        if belief:
+            L.append("### Belief State (per-gate observation status)")
+            L.append("")
+            L.append("| Belief | Status | Confidence | Evidence | Reason |")
+            L.append("| ------ | ------ | ---------- | -------- | ------ |")
+            for key, entry in belief.items():
+                conf = entry.get("confidence")
+                L.append(
+                    f"| `{key}` | {entry.get('status', '')} | "
+                    f"{conf if conf is not None else '—'} | "
+                    f"{entry.get('evidence_count', 0)} | {entry.get('reason', '')} |"
+                )
+            L.append("")
+        return L
+
+    def _connector_registry(self) -> list[str]:
+        reg = self.audit.get("connector_registry") or {}
+        connectors = reg.get("connectors", [])
+        if not connectors:
+            return []
+        L = ["## Evidence Connectors", ""]
+        L.append(
+            "_Capability audit only: which evidence surfaces this run could "
+            "observe and how. Unavailable connectors were skipped safely; a "
+            "connector's status is never evidence and never feeds a gate._"
+        )
+        L.append("")
+        L.append("| Connector | Kind | Status | Phases | Detail |")
+        L.append("| --------- | ---- | ------ | ------ | ------ |")
+        for c in connectors:
+            phases = ", ".join(str(p) for p in c.get("phases", [])) or "—"
+            L.append(
+                f"| `{c.get('name','')}` | {c.get('kind','')} | "
+                f"{c.get('status','')} | {phases} | {c.get('detail','')} |"
+            )
+        L.append("")
+        return L
+
+    def _screenshot_coverage(self) -> list[str]:
+        cov = self.audit.get("screenshot_coverage") or {}
+        if not cov:
+            return []
+        L = ["## Screenshot Audit Coverage", ""]
+        L.append(
+            "_Audit completeness is reported separately from gate validity: a "
+            "screenshot never satisfies a gate and a missing screenshot never "
+            "invalidates evidence — it only marks the documentation incomplete._"
+        )
+        L.append("")
+        L.append(f"- **Capture configured:** {cov.get('capture_configured', False)}")
+        L.append(f"- **Capture available:** {cov.get('capture_available', False)} — "
+                 f"{cov.get('capture_detail', '')}")
+        L.append(f"- **Accepted public sources requiring screenshots:** "
+                 f"{cov.get('screenshots_required_for_accepted_public_sources', 0)}")
+        L.append(f"- **Attempted:** {cov.get('screenshots_attempted', 0)} | "
+                 f"**Captured:** {cov.get('screenshots_captured', 0)} | "
+                 f"**Failed:** {cov.get('screenshots_failed', 0)}")
+        missing = cov.get("accepted_sources_without_screenshots", [])
+        if missing:
+            L.append(f"- **Accepted sources WITHOUT screenshots:** {', '.join(missing)}")
+        L.append(f"- **Audit complete for E1 recording:** "
+                 f"{cov.get('audit_complete_for_e1_recording', False)}")
+        if cov.get("reason"):
+            L.append(f"- **Why:** {cov['reason']}")
+        L.append("")
+        return L
+
+    def _next_evidence_plan(self) -> list[str]:
+        plan = self.audit.get("next_evidence_plan") or {}
+        if not plan.get("applies"):
+            return []
+        L = ["## Next Evidence Plan", ""]
+        if plan.get("primary_blocker"):
+            L.append(f"**Primary blocker (fix first):** `{plan['primary_blocker']}`")
+        failed = plan.get("failed_gates_in_priority_order", [])
+        if failed:
+            L.append("**Failed gates (priority order):** " + ", ".join(f"`{g}`" for g in failed))
+        L.append("")
+        for block in plan.get("targeted_search_plan", []):
+            L.append(f"### Gate `{block['for_failed_gate']}` → {block['phase_name']}")
+            sts = block.get("would_satisfy_source_types", [])
+            if sts:
+                L.append(f"_Would satisfy:_ {', '.join(sts)}")
+            if block.get("would_not_count"):
+                L.append(f"_Would NOT count:_ {block['would_not_count']}")
+            for fam in block.get("search_families", []):
+                L.append(f"- **{fam['name']}** — {fam['intent']}")
+                for q in fam.get("queries", [])[:5]:
+                    L.append(f"    - `{q}`")
+            L.append("")
+        return L
+
     def _incomplete(self, phase_present: bool) -> Optional[str]:
         if phase_present:
             return None
@@ -428,9 +595,16 @@ class _Renderer:
                       self.brief.phase_5_result):
             if phase is None:
                 continue
-            mark = "✓" if phase.status == PhaseStatus.PASS else "✗"
+            if phase.status == PhaseStatus.PASS:
+                mark = "✓"
+            elif phase.status == PhaseStatus.DIAGNOSTIC_ONLY:
+                mark = "◇"
+            else:
+                mark = "✗"
             L.append(f"### {mark} Phase {phase.phase_number}: {phase.phase_name}")
             L.append(f"**Status:** {phase.status.value}")
+            if phase.diagnostic_reason:
+                L.append(f"**Diagnostic-only:** {phase.diagnostic_reason}")
             L.append(f"**Pass Condition:** {phase.pass_condition}")
             L.append("")
             L.append(f"**Findings:** {phase.findings}")

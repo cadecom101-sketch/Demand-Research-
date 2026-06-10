@@ -221,6 +221,24 @@ class DecisionEngine:
             else:
                 ok("phase_2_passed", "Phase 2 buyer-language requirement met.")
 
+        # Gate 4b — diagnostic continuation. When later phases ran in
+        # diagnostic-only mode after an earlier hard-gate phase failed, the
+        # verdict is pinned to (at most) what the failed phase alone implies:
+        # Phase 2 -> PARK, Phase 3/4 -> REVISE. Diagnostic evidence is already
+        # excluded from every signal above; this gate guarantees verdict
+        # invariance even if a future change leaks diagnostic counts in.
+        diag_trigger = signals.get("diagnostic_trigger_phase")
+        if diag_trigger:
+            diag_phases = signals.get("diagnostic_phase_numbers", [])
+            cap = Decision.PARK if int(diag_trigger) <= 2 else Decision.REVISE
+            fail("diagnostic_continuation", cap,
+                 f"phases {diag_phases} ran in diagnostic-only continuation after "
+                 f"Phase {diag_trigger} failed; diagnostic evidence never satisfies "
+                 "a gate or raises the verdict in this run.")
+        else:
+            ok("diagnostic_continuation",
+               "no diagnostic continuation; every completed phase was gating.")
+
         # Gate 5 — tool / search failure (partial run).
         if run_status == "success":
             ok("tool_failure", "run completed without tool/search failure.")

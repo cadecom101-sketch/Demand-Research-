@@ -164,7 +164,7 @@ def test_markdown_output_renders(tmp_path):
 
     gen = MarkdownGenerator()
     path = gen.generate(brief)
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert "Demand Brief" in text
     assert brief.decision.value in text
     path.unlink()  # clean up generated artifact

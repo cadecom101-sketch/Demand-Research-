@@ -46,6 +46,15 @@ ARTIFACT_FILES = [
     "claim_ledger.jsonl",
     "evidence_scorecard.json",
     "e1_review_gates.json",
+    "extraction_errors.jsonl",
+    "research_tool_failures.jsonl",
+    "diagnostic_continuation.json",
+    "connector_registry.json",
+    "screenshots.jsonl",
+    "search_plan.json",
+    "decision_diagnostics.json",
+    "next_evidence_plan.json",
+    "next_evidence_plan.md",
     "demand_brief.md",
     "demand_brief.json",
 ]
@@ -54,6 +63,8 @@ ARTIFACT_FILES = [
 _EMPTY_JSON_ARTIFACTS = {
     "run_manifest.json", "evidence_scorecard.json",
     "missing_mechanism_gap.json", "e1_review_gates.json", "demand_brief.json",
+    "search_plan.json", "decision_diagnostics.json", "next_evidence_plan.json",
+    "diagnostic_continuation.json", "connector_registry.json",
 }
 
 
@@ -120,11 +131,20 @@ class RunRecorder:
         self.validated_source_count = 0
         self.rejected_source_count = 0
         self.buyer_language_artifact_count = 0
+        self._extraction_error_count = 0
+        self._extraction_salvage_count = 0
         self.run_status = "success"
 
         self._search_counts: Counter = Counter()
         self._search_total = 0
         self._search_seen: set = set()  # (phase_id, normalized_query) already written
+        # Per-phase provider-reported search failures (tool_error/rate_limited),
+        # consumed by the research/tool-failure detector.
+        self._search_failures_by_phase: dict = {}
+        self._research_tool_failures: List[dict] = []
+        self._diagnostic_continuation: dict = {}
+        self._connector_registry: dict = {}
+        self._screenshots: List[dict] = []
         self._rejected_by_reason: Counter = Counter()
         self._rejected_examples: List[dict] = []
         self._buyer_artifacts: List[dict] = []
@@ -213,6 +233,9 @@ class RunRecorder:
             status = a.get("status", "unknown")
             self._search_counts[status] += 1
             self._search_total += 1
+            if status in ("tool_error", "rate_limited"):
+                per_phase = self._search_failures_by_phase.setdefault(phase_id, Counter())
+                per_phase[status] += 1
             entry = SearchLogEntry(
                 run_id=self.run_id,
                 phase_id=phase_id,
@@ -295,6 +318,248 @@ class RunRecorder:
         self._e1_review_gates = record
         self._write_json("e1_review_gates.json", record)
 
+    def log_screenshot(self, record: dict) -> None:
+        """Append one screenshot attempt record (success, failure, or skip).
+
+        Every accepted public source gets exactly one record — including when
+        capture was unavailable — so screenshot coverage is fully auditable.
+        Screenshots document evidence; they never satisfy a gate, never
+        invalidate evidence, and never change a verdict.
+        """
+        stamped = {"run_id": self.run_id, "timestamp_utc": _utc_now_iso(), **record}
+        self._screenshots.append(stamped)
+        self._append_jsonl("screenshots.jsonl", stamped)
+
+    def screenshot_records(self) -> List[dict]:
+        return list(self._screenshots)
+
+    def write_connector_registry(self, connectors: List[dict], summary: dict) -> None:
+        """Write the per-run evidence-connector audit (valid JSON).
+
+        Records which connectors/capabilities were available, reachable via the
+        web-search provider, not configured, or unavailable — and why. Honest
+        capability reporting only: never evidence, never a gate input.
+        """
+        record = {
+            "run_id": self.run_id,
+            "checked_utc": _utc_now_iso(),
+            "connectors": connectors,
+            "summary": summary,
+        }
+        self._connector_registry = record
+        self._write_json("connector_registry.json", record)
+        unusable = summary.get("unusable") or []
+        if unusable:
+            self.add_note(
+                f"Connectors not usable this run (skipped safely, no prompt issued): "
+                f"{', '.join(unusable)}."
+            )
+
+    def write_search_plan(self, plan: dict) -> None:
+        """Write the diversified evidence-seeking search plan (valid JSON)."""
+        self._write_json("search_plan.json", plan)
+
+    def write_decision_diagnostics(self, diagnostics: dict) -> None:
+        """Write the decision diagnostics (why the verdict was reached)."""
+        self._write_json("decision_diagnostics.json", diagnostics)
+
+    def write_next_evidence_plan(self, plan: dict, markdown: str) -> None:
+        """Write the next-evidence plan (JSON always; markdown when applicable)."""
+        self._write_json("next_evidence_plan.json", plan)
+        self._write_text("next_evidence_plan.md", markdown or "")
+
+    @property
+    def extraction_error_count(self) -> int:
+        """Number of extraction parse failures logged this run."""
+        return self._extraction_error_count
+
+    @property
+    def extraction_salvage_count(self) -> int:
+        """Number of source-object salvage events logged this run."""
+        return self._extraction_salvage_count
+
+    # ------------------------------------------------------------------ #
+    # Raw research / extraction capture (debug audit trail)
+    # ------------------------------------------------------------------ #
+    def write_raw_research(
+        self,
+        phase_number: int,
+        text: str,
+        citations: Optional[List[str]] = None,
+        search_attempts: Optional[List[dict]] = None,
+    ) -> None:
+        """Persist the EXACT web-research text for a phase, unmodified.
+
+        The `.txt` file holds the raw model research output verbatim (not
+        summarised, cleaned, or trimmed). Citation/search metadata goes into a
+        sidecar JSON file so the raw text stays byte-for-byte faithful.
+        """
+        self._write_text(f"raw_research_findings_phase_{phase_number}.txt", text or "")
+        sidecar = {
+            "run_id": self.run_id,
+            "phase": f"phase_{phase_number}",
+            "captured_utc": _utc_now_iso(),
+            "citations": list(citations or []),
+            "search_attempts": list(search_attempts or []),
+        }
+        self._write_json(f"raw_research_findings_phase_{phase_number}.citations.json", sidecar)
+
+    def write_raw_extraction(self, phase_number: int, text: str) -> None:
+        """Persist the EXACT extraction model response for a phase, BEFORE JSON
+        parsing — written whether or not parsing later succeeds."""
+        self._write_text(f"raw_extraction_response_phase_{phase_number}.txt", text or "")
+
+    def write_raw_extraction_chunk(self, phase_number: int, chunk_index: int, text: str) -> None:
+        """Persist the EXACT extraction response for one chunk of a chunked
+        extraction pass (in addition to the combined per-phase file)."""
+        self._write_text(
+            f"raw_extraction_response_phase_{phase_number}_chunk_{chunk_index}.txt", text or "",
+        )
+
+    def log_extraction_error(
+        self,
+        phase_number: int,
+        error_type: str,
+        error_message: str,
+        parser_step: str,
+        raw_preview: str,
+        *,
+        line: Optional[int] = None,
+        column: Optional[int] = None,
+        char_position: Optional[int] = None,
+        excerpt: Optional[str] = None,
+        chunk_id: Optional[str] = None,
+    ) -> None:
+        """Append a failed extraction-parse attempt to extraction_errors.jsonl.
+
+        Records the JSONDecodeError location (line/column/char position) and a
+        ~500-char excerpt around the failure so a truncation/malformed response
+        is debuggable. Never logs API keys, credentials, or system prompts.
+        """
+        if self.run_status == "success":
+            self.run_status = "partial"
+        self._extraction_error_count += 1
+        record = {
+            "timestamp_utc": _utc_now_iso(),
+            "phase": f"phase_{phase_number}",
+            "chunk_id": chunk_id,
+            "error_type": error_type,
+            "error_message": error_message,
+            "parser_step_failed": parser_step,
+            "line": line,
+            "column": column,
+            "char_position": char_position,
+            "excerpt": (excerpt or "")[:500],
+            "raw_preview": (raw_preview or "")[:300],
+        }
+        self._append_jsonl("extraction_errors.jsonl", record)
+        self.add_note(
+            f"phase_{phase_number} extraction parse failed ({parser_step}"
+            f"{', ' + chunk_id if chunk_id else ''}); no sources accepted from that "
+            "pass (fail-closed)."
+        )
+
+    def log_extraction_salvage(
+        self,
+        phase_number: int,
+        stats: dict,
+        *,
+        chunk_id: Optional[str] = None,
+    ) -> None:
+        """Record a partial-recovery (source-object salvage) event.
+
+        Complete source objects were recovered from an otherwise malformed or
+        truncated response; the broken tail was discarded (never repaired). This
+        is a degraded extraction, so the run is marked `partial` — salvage
+        preserves valid evidence for the ledger and phase pass/fail, but the run
+        can never be certified clean.
+        """
+        if self.run_status == "success":
+            self.run_status = "partial"
+        self._extraction_salvage_count += 1
+        record = {
+            "timestamp_utc": _utc_now_iso(),
+            "phase": f"phase_{phase_number}",
+            "chunk_id": chunk_id,
+            "error_type": "recovered_via_source_object_salvage",
+            "parser_step_failed": stats.get("parser_step", "source_object_salvage"),
+            "salvaged_source_objects": int(stats.get("salvaged_source_objects", 0)),
+            "discarded_malformed_source_objects": int(
+                stats.get("discarded_malformed_source_objects", 0)
+            ),
+            "line": stats.get("line"),
+            "column": stats.get("column"),
+            "char_position": stats.get("char_position"),
+            "excerpt": (stats.get("excerpt") or "")[:500],
+        }
+        self._append_jsonl("extraction_errors.jsonl", record)
+        self.add_note(
+            f"phase_{phase_number} extraction was truncated/malformed"
+            f"{', ' + chunk_id if chunk_id else ''}; salvaged "
+            f"{record['salvaged_source_objects']} complete source object(s), discarded "
+            f"{record['discarded_malformed_source_objects']} (run marked partial)."
+        )
+
+    def log_research_tool_failure(self, record: dict) -> None:
+        """Durably record a detected research/tool failure for one phase.
+
+        The record (from `tool_failure.detect_run_tool_failures`) carries the
+        phase id/name, failure types, severity, detection sources, matched
+        signals with short previews, and the partial/certification flags. The
+        run is marked partial: a tool-failed observation can never be certified
+        as a clean market conclusion, and the existing `tool_failure` hard gate
+        caps a partial run at PARK (fail-closed; never raises a verdict).
+        Never logs API keys, credentials, or system prompts.
+        """
+        if self.run_status == "success":
+            self.run_status = "partial"
+        stamped = {
+            "run_id": self.run_id,
+            "timestamp_utc": _utc_now_iso(),
+            **record,
+        }
+        self._research_tool_failures.append(stamped)
+        self._append_jsonl("research_tool_failures.jsonl", stamped)
+        self.add_note(
+            f"{record.get('phase_id', 'phase_?')} research/tool failure detected "
+            f"({'/'.join(record.get('failure_types', []))}; severity "
+            f"{record.get('failure_severity', 'unknown')}): observation incomplete — "
+            "NOT a market conclusion; run marked partial (fail-closed)."
+        )
+
+    def write_diagnostic_continuation(self, record: dict) -> None:
+        """Durably record a diagnostic continuation decision.
+
+        Later phases ran AFTER an earlier hard-gate phase failed; their evidence
+        is recorded in the normal artifact files (marked diagnostic_only) for
+        future cycles but is excluded from every gate, claim, score, and the E1
+        review of this run. Continuation does NOT mark the run partial — it is
+        a deliberate evidence-collection decision, not an observation failure.
+        """
+        stamped = {
+            "run_id": self.run_id,
+            "timestamp_utc": _utc_now_iso(),
+            **record,
+        }
+        self._diagnostic_continuation = stamped
+        self._write_json("diagnostic_continuation.json", stamped)
+        self.add_note(
+            f"Diagnostic continuation: phases {record.get('diagnostic_phases', [])} ran "
+            f"diagnostic-only after phase {record.get('triggered_by_phase')} failed; "
+            "their evidence is recorded for future cycles and never satisfies a gate "
+            "or raises the verdict in this run (fail-closed)."
+        )
+
+    @property
+    def research_tool_failure_count(self) -> int:
+        """Number of phases with a detected research/tool failure this run."""
+        return len(self._research_tool_failures)
+
+    def search_failures_by_phase(self) -> dict:
+        """Provider-reported search failures per phase:
+        {phase_id: {"tool_error": n, "rate_limited": n}}."""
+        return {pid: dict(c) for pid, c in self._search_failures_by_phase.items()}
+
     # ------------------------------------------------------------------ #
     # Summaries for the bundle / markdown
     # ------------------------------------------------------------------ #
@@ -334,7 +599,11 @@ class RunRecorder:
         scorecard = EvidenceScorecard(run_id=self.run_id, **{
             k: scorecard_dict.get(k)
             for k in ("formula_version", "components", "total_score",
-                      "decision_thresholds", "hard_gate_overrides")
+                      "decision_thresholds", "hard_gate_overrides",
+                      "score_meaning", "hard_gate_caps", "partial_run_caps",
+                      "why_score_does_not_approve",
+                      "evidence_not_observed_due_to_tooling", "clean_vs_partial",
+                      "diagnostic_continuation_note")
             if scorecard_dict.get(k) is not None
         })
         self._write_json("evidence_scorecard.json", scorecard.model_dump(mode="json"))
@@ -345,6 +614,12 @@ class RunRecorder:
         bundle["run_status"] = self.run_status
         bundle["search_summary"] = self.search_summary()
         bundle["rejected_summary"] = self.rejected_summary()
+        bundle["research_tool_failures"] = self._research_tool_failures
+        if self._diagnostic_continuation:
+            bundle.setdefault("diagnostic_continuation", self._diagnostic_continuation)
+        if self._connector_registry:
+            bundle.setdefault("connector_registry", self._connector_registry)
+        bundle["screenshots"] = self._screenshots
         bundle["buyer_artifacts"] = self._buyer_artifacts
         bundle["price_bands"] = self._price_bands
         bundle["competitors"] = self._competitors

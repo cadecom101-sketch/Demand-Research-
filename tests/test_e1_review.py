@@ -28,11 +28,11 @@ import test_audit as t  # reuse offline fakes: _researcher, _hypothesis, _src, _
 def _read_jsonl(path):
     if not path.exists():
         return []
-    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
 
 def _e1(rec):
-    return json.loads((rec.run_dir / "e1_review_gates.json").read_text())
+    return json.loads((rec.run_dir / "e1_review_gates.json").read_text(encoding="utf-8"))
 
 
 def _gate(e1, gate_id):
@@ -158,7 +158,7 @@ def test_strong_evidence_never_builds(tmp_path):
     brief = asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
     assert brief.decision == Decision.TEST
     assert brief.decision != Decision.BUILD
-    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text())
+    manifest = json.loads((rec.run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["final_decision"] != "BUILD"
     assert manifest["review_verdict"] == "E1_APPROVED_TO_RECORD"
 
@@ -289,7 +289,7 @@ def test_revenue_os_payload_is_draft_only(tmp_path):
     assert payload["demand_briefs"]["member_name"] == "Base — Retail Instant-Download OS"
     assert payload["demand_briefs"]["recording_status"] == "DRAFT_ONLY_NOT_RECORDED"
     # Markdown surfaces the do-not-write warning.
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     assert "DO NOT WRITE TO REVENUE OS FROM THIS REPO" in md
     assert "## Revenue OS Recording Payload Draft" in md
 
@@ -300,7 +300,7 @@ def test_e1_review_gates_written_pass_and_fail(tmp_path):
     rec_pass = RunRecorder(t._hypothesis(), model_name="m", base_dir=tmp_path / "pass")
     orch_pass = ResearchOrchestrator(researcher=t._researcher(_base_sources(), t._GAP))
     asyncio.run(orch_pass.run_workflow(t._hypothesis(), recorder=rec_pass))
-    e1_pass = json.loads((rec_pass.run_dir / "e1_review_gates.json").read_text())
+    e1_pass = json.loads((rec_pass.run_dir / "e1_review_gates.json").read_text(encoding="utf-8"))
     assert len(e1_pass["gates"]) == 9
     assert e1_pass["review_verdict"] == "E1_APPROVED_TO_RECORD"
 
@@ -308,7 +308,7 @@ def test_e1_review_gates_written_pass_and_fail(tmp_path):
     rec_fail = RunRecorder(t._hypothesis(), model_name="m", base_dir=tmp_path / "fail")
     orch_fail = ResearchOrchestrator(researcher=t._researcher([[t._src("signal", 0)]], t._GAP))
     asyncio.run(orch_fail.run_workflow(t._hypothesis(), recorder=rec_fail))
-    e1_fail = json.loads((rec_fail.run_dir / "e1_review_gates.json").read_text())
+    e1_fail = json.loads((rec_fail.run_dir / "e1_review_gates.json").read_text(encoding="utf-8"))
     assert isinstance(e1_fail, dict)
     assert len(e1_fail["gates"]) == 9
     assert e1_fail["review_verdict"] in {"E1_PARK", "E1_REVISE_BEFORE_RECORDING", "E1_KILL"}
@@ -319,7 +319,7 @@ def test_markdown_has_hierarchy_and_states(tmp_path):
     rec = RunRecorder(t._hypothesis(), model_name="m", base_dir=tmp_path)
     orch = ResearchOrchestrator(researcher=t._researcher(_base_sources(), t._GAP))
     asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     for needle in (
         "Primitive: Governed Solo-Operator Launch OS",
         "Target Member: Base — Retail Instant-Download OS",
@@ -345,7 +345,7 @@ def test_existing_audit_files_remain_valid(tmp_path):
     asyncio.run(orch.run_workflow(t._hypothesis(), recorder=rec))
     for name in ("run_manifest.json", "evidence_scorecard.json", "demand_brief.json",
                  "missing_mechanism_gap.json", "e1_review_gates.json"):
-        assert isinstance(json.loads((rec.run_dir / name).read_text()), dict)
+        assert isinstance(json.loads((rec.run_dir / name).read_text(encoding="utf-8")), dict)
     for name in ("source_ledger.jsonl", "claim_ledger.jsonl",
                  "buyer_language_artifacts.jsonl", "competitor_map.jsonl"):
         _read_jsonl(rec.run_dir / name)  # raises if any line is invalid JSON

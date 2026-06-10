@@ -17,7 +17,7 @@ import test_audit as t
 
 
 def _read_jsonl(path):
-    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
 
 def _run(sources, gap=None, tmp_path=None):
@@ -58,7 +58,7 @@ def test_what_proves_excludes_price_band_when_zero_artifacts(tmp_path):
         [t._src("lead", i) for i in range(11)],
     ]
     rec, _ = _run(sources, tmp_path=tmp_path)
-    md = (rec.run_dir / "demand_brief.md").read_text()
+    md = (rec.run_dir / "demand_brief.md").read_text(encoding="utf-8")
     proves = md[md.find("## What This Proves"):md.find("## What This Does NOT Prove")]
     assert "price band" not in proves.lower()
     not_proves = md[md.find("## What This Does NOT Prove"):md.find("## What Would Change")]

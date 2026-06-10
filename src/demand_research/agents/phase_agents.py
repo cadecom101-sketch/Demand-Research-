@@ -18,8 +18,13 @@ from demand_research.models import (
     PhaseStatus,
     SourceCard,
 )
-from demand_research.research.claude_researcher import ClaudeResearcher
+from demand_research.research.claude_researcher import (
+    ClaudeResearcher,
+    chunk_text,
+    dedupe_raw_sources,
+)
 from demand_research.research.evidence_validator import EvidenceValidator
+from demand_research.research.query_planner import prompt_appendix
 from demand_research.research.source_collector import SourceCollector
 
 logger = logging.getLogger(__name__)
@@ -40,8 +45,29 @@ RESEARCH_SYSTEM = (
 EXTRACT_SYSTEM = (
     "You convert research notes into strict JSON. Only include items that have "
     "a real source URL present in the notes. Do not invent data. If a field is "
-    "unknown, use null. Output a single JSON object and nothing else."
+    "unknown, omit it or use null. Output a single JSON object and nothing else: "
+    "no markdown, no code fences, no prose. Include at most 10 sources. Keep every "
+    "text field under 200 characters and on a single line (no embedded newlines). "
+    "If you are running low on room, return FEWER complete source objects rather "
+    "than a truncated final object."
 )
+
+# Output-discipline rules appended to every extraction instruction. They reduce
+# the chance of truncated/malformed JSON; they do not change any evidence bar.
+_EXTRACTION_RULES = (
+    "STRICT OUTPUT RULES (follow exactly):\n"
+    "- Output JSON only. No markdown, no code fences, no explanation.\n"
+    "- At most 10 sources in the \"sources\" array.\n"
+    "- Every text field <= 200 characters.\n"
+    "- No newline characters inside any string value.\n"
+    "- Omit unknown fields or set them to null; never guess.\n"
+    "- Always close every object and the array. If space runs short, emit fewer "
+    "COMPLETE source objects rather than a cut-off final object."
+)
+
+# Research findings longer than this are extracted in smaller chunks so a single
+# over-long response cannot truncate and lose everything.
+_EXTRACTION_CHUNK_CHAR_LIMIT = 12000
 
 # The JSON shape every extraction must follow (described in-prompt since we
 # parse defensively rather than relying on a specific structured-output API).
@@ -118,15 +144,23 @@ class BasePhaseAgent:
         default_platform: str,
         search_phrase: Optional[str] = None,
         recorder: Optional[Any] = None,
+        hypothesis: Optional[ProductHypothesis] = None,
     ) -> tuple[list[SourceCard], str]:
         """Run web research -> structured extraction -> validation.
 
         Every search attempt, the exact phase prompt, and every rejected source
         are streamed to the run recorder (when present) so the run is auditable.
+        When a `hypothesis` is supplied, diversified query families (the query
+        planner) are appended to the research prompt so the search casts a wider,
+        smarter net — this changes no gate or threshold, only search quality.
 
         Returns (validated_sources, findings_summary).
         """
         phase_id = f"phase_{self.phase_number}"
+        if hypothesis is not None:
+            appendix = prompt_appendix(hypothesis, self.phase_number)
+            if appendix:
+                research_prompt = f"{research_prompt}\n{appendix}"
         if recorder is not None:
             recorder.log_phase_prompt(phase_id, self.phase_name, research_prompt)
 
@@ -135,6 +169,12 @@ class BasePhaseAgent:
         # Log searches even when the pass returns no usable text.
         if recorder is not None:
             recorder.log_searches(phase_id, self.phase_name, result.search_attempts)
+            # Persist the EXACT research text (+ citation/search sidecar) BEFORE
+            # extraction, so a downstream parse failure is still debuggable.
+            recorder.write_raw_research(
+                self.phase_number, result.text,
+                citations=result.citations, search_attempts=result.search_attempts,
+            )
 
         if not result.text:
             return [], "Web research returned no usable findings."
@@ -146,12 +186,8 @@ class BasePhaseAgent:
             url_list = "\n".join(f"- {u}" for u in result.citations)
             findings_for_extraction = f"{result.text}\n\nSource URLs found:\n{url_list}"
 
-        data = self.researcher.extract(
-            findings_for_extraction,
-            f"{extract_instruction}\n\n{_SOURCE_JSON_SHAPE}",
-            system=EXTRACT_SYSTEM,
-        )
-        raw_sources = data.get("sources", []) if isinstance(data, dict) else []
+        full_instruction = f"{extract_instruction}\n\n{_SOURCE_JSON_SHAPE}\n\n{_EXTRACTION_RULES}"
+        raw_sources = self._run_extraction(findings_for_extraction, full_instruction, recorder)
         if recorder is not None:
             recorder.bump_raw(len(raw_sources))
 
@@ -184,6 +220,66 @@ class BasePhaseAgent:
                         reason=reason, validator_rule=rule,
                     )
         return cards, result.text.strip()
+
+    def _run_extraction(
+        self,
+        findings: str,
+        instruction: str,
+        recorder: Optional[Any],
+    ) -> list:
+        """Extract raw source dicts from findings — chunked + salvage-aware.
+
+        Long research text is split into smaller extraction chunks so a single
+        truncated response cannot lose everything. Each chunk is parsed and
+        salvaged independently; complete source objects are merged and de-duped by
+        (url, source_name). One bad chunk never erases good chunks. The exact
+        per-phase and per-chunk raw responses are persisted before parsing is
+        trusted. Nothing is fabricated: a chunk that yields no complete object
+        contributes nothing.
+        """
+        chunks = chunk_text(findings, _EXTRACTION_CHUNK_CHAR_LIMIT)
+        chunked = len(chunks) > 1
+        raw_parts: list[str] = []
+        merged: list = []
+
+        for idx, chunk in enumerate(chunks, start=1):
+            extraction = self.researcher.extract(chunk, instruction, system=EXTRACT_SYSTEM)
+            raw_parts.append(extraction.raw_text)
+            chunk_id = f"chunk_{idx}" if chunked else None
+            if recorder is not None:
+                if chunked:
+                    recorder.write_raw_extraction_chunk(self.phase_number, idx, extraction.raw_text)
+                if extraction.parse_error is not None:
+                    pe = extraction.parse_error
+                    recorder.log_extraction_error(
+                        self.phase_number,
+                        error_type=pe.get("error_type", "parse_error"),
+                        error_message=pe.get("error_message", ""),
+                        parser_step=pe.get("parser_step", ""),
+                        raw_preview=extraction.raw_text,
+                        line=pe.get("line"), column=pe.get("column"),
+                        char_position=pe.get("char_position"), excerpt=pe.get("excerpt"),
+                        chunk_id=chunk_id,
+                    )
+                elif extraction.salvage is not None:
+                    recorder.log_extraction_salvage(
+                        self.phase_number, extraction.salvage, chunk_id=chunk_id,
+                    )
+            data = extraction.data if isinstance(extraction.data, dict) else {}
+            srcs = data.get("sources", []) if isinstance(data, dict) else []
+            if isinstance(srcs, list):
+                merged.extend(s for s in srcs if isinstance(s, dict))
+
+        # Persist the combined per-phase raw response (compatibility filename),
+        # whether or not the pass was chunked.
+        if recorder is not None:
+            combined = (
+                raw_parts[0] if not chunked
+                else "\n\n=== CHUNK SPLIT ===\n\n".join(raw_parts)
+            )
+            recorder.write_raw_extraction(self.phase_number, combined)
+
+        return dedupe_raw_sources(merged)
 
     def _build_card(
         self,
@@ -275,6 +371,7 @@ class Phase1Agent(BasePhaseAgent):
             default_platform=hypothesis.primary_channel,
             search_phrase=hypothesis.product_name,
             recorder=recorder,
+            hypothesis=hypothesis,
         )
         passed = len(sources) >= self.min_sources
         return self._result(
@@ -340,7 +437,8 @@ class Phase2Agent(BasePhaseAgent):
             "when it is verbatim; use false for paraphrase/composite."
         )
         sources, findings = self._collect_sources(
-            research_prompt, extract_instruction, default_platform="Reddit", recorder=recorder
+            research_prompt, extract_instruction, default_platform="Reddit",
+            recorder=recorder, hypothesis=hypothesis,
         )
         # Hard gate: Phase 2 ACCEPTS only genuine, verbatim buyer-language
         # artifacts (Grade B). Any other candidate that survived URL validation
@@ -351,6 +449,46 @@ class Phase2Agent(BasePhaseAgent):
         considered = len(sources)
         for card in sources:
             if card.is_direct_quote and card.buyer_language_captured:
+                # Stricter classification: a glowing/generic-satisfaction quote
+                # proves the category sells, NOT the target buyer pain a Phase 2
+                # artifact must demonstrate. Reject it durably rather than count
+                # it as pain. (This can only reduce accepted buyer language.)
+                if self.validator.is_generic_satisfaction_quote(card.buyer_language_captured):
+                    if recorder is not None:
+                        recorder.log_rejected(
+                            f"phase_{self.phase_number}", self.phase_name,
+                            {
+                                "url": str(card.url),
+                                "source_name": card.source_name,
+                                "platform": card.platform,
+                                "what_it_proves": card.what_this_proves,
+                                "buyer_language": card.buyer_language_captured or "",
+                            },
+                            reason="generic_satisfaction_not_pain",
+                            validator_rule="phase2_pain_requirement",
+                        )
+                    continue
+                # Generic NEGATIVE reviews ("bad download", "seller was rude",
+                # "too expensive") prove product dissatisfaction, not the
+                # target buyer pain — rejected durably unless the exact quote
+                # connects to the target job. Negative remarks that name the
+                # target pain ("didn't help me know what product to make",
+                # "still got no sales") pass through and count.
+                if self.validator.is_generic_negative_review(card.buyer_language_captured):
+                    if recorder is not None:
+                        recorder.log_rejected(
+                            f"phase_{self.phase_number}", self.phase_name,
+                            {
+                                "url": str(card.url),
+                                "source_name": card.source_name,
+                                "platform": card.platform,
+                                "what_it_proves": card.what_this_proves,
+                                "buyer_language": card.buyer_language_captured or "",
+                            },
+                            reason="generic_negative_not_target_pain",
+                            validator_rule="phase2_target_pain_requirement",
+                        )
+                    continue
                 artifacts.append(card)
             elif recorder is not None:
                 reason, rule = _phase2_rejection(card)
@@ -413,6 +551,7 @@ class Phase3Agent(BasePhaseAgent):
         sources, findings = self._collect_sources(
             research_prompt, extract_instruction,
             default_platform=hypothesis.primary_channel, recorder=recorder,
+            hypothesis=hypothesis,
         )
         # Only verified competitor prices count. Competitor leads (no price /
         # "not captured") and general market-pricing articles do NOT satisfy
@@ -500,6 +639,7 @@ class Phase4Agent(BasePhaseAgent):
         sources, findings = self._collect_sources(
             research_prompt, extract_instruction,
             default_platform=hypothesis.primary_channel, recorder=recorder,
+            hypothesis=hypothesis,
         )
         # Fall back to Phase 3 competitors if fresh structural search was thin.
         if len(sources) < self.min_sources and phase3_result.sources_collected:
@@ -555,12 +695,31 @@ class Phase5Agent(BasePhaseAgent):
         )
         if recorder is not None:
             recorder.log_phase_prompt(f"phase_{self.phase_number}", self.phase_name, instruction)
-        data = self.researcher.extract(
+            # Phase 5 is synthesis (no web search): its "research" input is the
+            # competitor structures carried in from Phase 4. Capture that input
+            # as this phase's raw research record so the trail stays complete.
+            recorder.write_raw_research(self.phase_number, competitor_summary)
+        extraction = self.researcher.extract(
             findings=competitor_summary,
             instruction=instruction,
             system=EXTRACT_SYSTEM,
         )
-        data = data if isinstance(data, dict) else {}
+        if recorder is not None:
+            recorder.write_raw_extraction(self.phase_number, extraction.raw_text)
+            if extraction.parse_error is not None:
+                pe = extraction.parse_error
+                recorder.log_extraction_error(
+                    self.phase_number,
+                    error_type=pe.get("error_type", "parse_error"),
+                    error_message=pe.get("error_message", ""),
+                    parser_step=pe.get("parser_step", ""),
+                    raw_preview=extraction.raw_text,
+                    line=pe.get("line"), column=pe.get("column"),
+                    char_position=pe.get("char_position"), excerpt=pe.get("excerpt"),
+                )
+            elif extraction.salvage is not None:
+                recorder.log_extraction_salvage(self.phase_number, extraction.salvage)
+        data = extraction.data if isinstance(extraction.data, dict) else {}
         is_structural = _coerce_bool(data.get("is_structural"))
         gap_statement = _coerce_str(data.get("gap_statement")) or ""
         reason = _coerce_str(data.get("reason")) or ""
